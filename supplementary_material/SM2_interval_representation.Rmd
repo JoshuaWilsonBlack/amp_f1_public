@@ -1,0 +1,1656 @@
+---
+title: "SM2. Interval representation, imputation, and permutation"
+subtitle: "Supplementary Material for 'The overlooked effect of amplitude on within-speaker vowel variation'"
+author: "Joshua Wilson Black, Jen Hay, Lynn Clark, James Brand"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  # bookdown::pdf_document2:
+  #   toc: yes
+  bookdown::html_document2:
+    fig_caption: true
+    toc: true
+    toc_float: true
+    theme: flatly
+    collapsed: no
+    df_print: paged
+    code_folding: show
+---
+
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #95A044;
+}
+
+pre {
+  max-height: 300px;
+  overflow-y: 300px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  fig.align='center', 
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Overview
+
+To move beyond the use of single summary values for each vowel in a given
+recording, we need a representation of the change in central tendency of vowels
+across conversations. We also need a way to compare the values of our vowels
+of interest at a given time in the interval. In order to achieve this we
+divide each monologue into intervals of 60 and 240 seconds. 
+
+Once the intervals have been established, we filter out intervals with very
+low amounts of data and impute data for intervals in which we lack sufficient 
+data for a few vowels.
+
+Finally, we repeat the interval creation steps on permuted data to allow for 
+permutation-based significance testing in later stages of the project.
+
+This document corresponds to Section 3.1.1 of the paper.
+
+**NB:** The cells which save processed data will not run when knitting this
+file. This is to avoid accidentally overwriting data. The cells which
+write data can be manually run from within the RStudio interface.
+To change this behaviour, remove the cell option `eval = FALSE` from the
+relevant cells.
+
+# Data and Libraries
+
+We load in the data and libraries.
+
+``` {r libraries, message=F}
+# Tidyverse and friends
+library(tidyverse)
+library(patchwork) # For combining multiple plots into one.
+library(scico) # For colour palettes. 
+library(ggrepel)
+library(scales)
+library(glue)
+
+# Filepath management
+library(here)
+
+# Random seed for reproducibility
+set.seed(101)
+
+# We set the colours for plots following Brand at al. (2021)
+vowel_colours_with_foot <- c(
+  DRESS = "#9590FF",
+  FLEECE = "#D89000",
+  FOOT = "#966432",
+  GOOSE = "#A3A500",
+  KIT = "#39B600",
+  LOT = "#00BF7D",
+  NURSE = "#00BFC4",
+  START = "#00B0F6",
+  STRUT = "#F8766D",
+  THOUGHT = "#E76BF3",
+  TRAP = "#FF62BC"
+)
+
+vowel_colours <- c(
+  DRESS = "#9590FF",
+  FLEECE = "#D89000",
+  GOOSE = "#A3A500",
+  KIT = "#39B600",
+  LOT = "#00BF7D",
+  NURSE = "#00BFC4",
+  START = "#00B0F6",
+  STRUT = "#F8766D",
+  THOUGHT = "#E76BF3",
+  TRAP = "#FF62BC"
+)
+
+```
+
+We load in raw data, selecting a subset of the variables which are of use for
+smoothing and visualising how the methods are performing for different groups.
+
+In order to repeat these steps with permuted versions of the data set later on,
+we will define reusable functions for many of our steps rather than copying and
+pasting large amounts of code.
+
+``` {r data-load}
+data_load <- function(filename) {
+  # Load data from preprocessing stage, select required variables, and 
+  # rename for convenience.
+  df <- read_rds(filename) %>%
+    select(
+      Speaker,
+      Vowel,
+      Target.segments.start,
+      F1_50,
+      F2_50,
+      word,
+      MeanPitch,
+      utterance.articulation.rate,
+      participant_gender,
+      participant_nz_ethnic,
+      participant_age_category,
+      following_segment_category,
+      intensity_max
+    ) %>%
+    rename(
+      time_unscaled = Target.segments.start,
+      articulation_rate = utterance.articulation.rate,
+      ethnicity = participant_nz_ethnic,
+      gender = participant_gender,
+      age_category = participant_age_category
+    ) %>%
+    ungroup()
+}
+
+# Apply function to processed data.
+qb_vowels <- data_load(here('processed_data', 'Quakebox_filtered.rds'))
+```
+
+# Intervals
+
+## Generating Interval Representation
+
+We establish 60 second intervals and 240 second intervals.
+
+We delete 'trailing intervals' if they extend beyond the end of the
+monologue any more than a quarter of the interval length. That is, if a four
+minute interval is being derived from less than three minutes of data or a 
+60 second interval is being derived from less than 45 seconds of data.
+
+At this point we scale the formant, amplitude, and articulation rate
+data around the mean. Formant data is scaled by vowel.
+
+``` {r generate-intervals}
+# Function to generate intervals from the raw data.
+# We define a function here in order to easily repeat the
+# process with the permuted data.
+create_intervals <- function(df) {
+  df %>%
+    # Step 1: divide the time variable into 60 second and 240 second intervals.
+    group_by(Speaker) %>%
+    mutate(
+      interval_60 = as.numeric(
+        as.factor(
+          # This cut function breaks the time variable at 0 seconds, 60 seconds
+          # 120 seconds, etc etc, up to the first multiple of 60 longer than 
+          # the participant's monologue.
+          cut(
+            time_unscaled, 
+            breaks = seq(0, max(time_unscaled) + 60, 60))
+          )
+        )*60,
+      interval_240 = as.numeric(
+        as.factor(
+          # This cut function breaks the time variable at 0 seconds, 240 seconds
+          # 480 seconds, etc etc, up to the first multiple of 240 longer than 
+          # the participant's monologue.
+          cut(
+            time_unscaled, 
+            breaks = seq(0, max(time_unscaled) + 240, 240))
+          )
+        )*240,
+    ) %>%
+    # Step 2: Trim final intervals with insufficient data. If a final 60 second
+    # interval has less than 45 seconds of content, we exclude it by replacing
+    # all values in the interval with NA. The same is done for 240 second 
+    # intervals with less than 180 seconds of content. (The cut off values are
+    # 3/4 of the interval length).
+    mutate(
+      speaker_length = max(time_unscaled),
+      remaining_from_start_60 = speaker_length - (interval_60 - 60),
+      remaining_from_start_240 = speaker_length - (interval_240 - 240),
+      interval_60 = if_else(remaining_from_start_60 >= 45, interval_60, NA_real_),
+      interval_240 = if_else(remaining_from_start_240 >= 180, interval_240, NA_real_),
+    ) %>%
+    # Step 3: Scale amplitude and articulation rate data at the speaker level.
+    mutate(
+      intensity_max = scale(intensity_max),
+      articulation_rate = scale(articulation_rate)
+    ) %>%
+    # Step 4: Scale F1 and F2 values by speaker and vowel
+    group_by(Speaker, Vowel) %>%
+    mutate(
+      F1_50 = scale(F1_50),
+      F2_50 = scale(F2_50)
+    ) %>%
+    # Step 5: Reshape so that the F1 and F2 values for each token get their own
+    # rows.
+    pivot_longer(
+      F1_50:F2_50,
+      names_to = "formant_type",
+      values_to = "formant_value"
+    ) %>%
+    ungroup() %>%
+    # Step 6: calculate mean value of formants for 60s intervals.
+    group_by(Speaker, Vowel, interval_60, formant_type) %>%
+    mutate(
+      n_60 = n(),
+      mean_60 = mean(formant_value),
+    ) %>%
+    ungroup() %>%
+    # Step 7: calculate summary values for intensity and articulation rate for
+    # 60s intervals
+    group_by(Speaker, interval_60) %>%
+    mutate(
+      art_60 = mean(articulation_rate, na.rm=TRUE),
+      amp_60 = mean(intensity_max, na.rm=TRUE)
+    ) %>%
+    ungroup() %>%
+    # Steps 8 and 9: Repeat 6 and 7 for 240 second intervals.
+    group_by(Speaker, Vowel, interval_240, formant_type) %>%
+    mutate(
+      n_240 = n(),
+      mean_240 = mean(formant_value)
+    ) %>%
+    group_by(Speaker, interval_240) %>%
+    mutate(
+      amp_240 = mean(intensity_max, na.rm=TRUE),
+      art_240 = mean(articulation_rate, na.rm=TRUE)
+    ) %>%
+    ungroup()
+}
+
+# Apply interval creation function to the data.
+qb_ints <- create_intervals(qb_vowels)
+```
+
+The dataframe `qb_ints` is like the preprocessed data by having two rows for
+each _token_ (one for F1 and one for F2). We want a dataframe with two rows for
+each _interval_ (one for F1 and one for F2). The following code carries out this
+transformation by creating a distinct dataframe for the 60 and 240 second
+interval representations with two rows per interval, and then combining the two
+dataframes with a new column (`interval_length`) to track whether the row is
+from a 60 or 240 second interval.
+
+``` {r interval-row-transformation}
+# We divide the intervals into two data frames. One for 60 second intervals,
+# the other for 240 second intervals. These data frames will have two rows for
+# each interval (one for F1, one for F2) rather than two rows for each token.
+qb_60 <- qb_ints %>%
+  filter(!is.na(interval_60)) %>% # filter out bad intervals
+  group_by(Speaker, Vowel, formant_type, interval_60) %>%
+  summarise(
+    n_int = first(n_60),
+    mean_int = first(mean_60),
+    art_int = first(art_60),
+    amp_int = first(amp_60)
+  ) %>%
+  ungroup() %>%
+  # Some vowels may be missing amplitude data, so we add this
+  # group_by + mutate to ensure that we get at least one good value.
+  group_by(Speaker, interval_60) %>%
+  mutate(
+    amp_int = first(amp_int)
+  ) %>%
+  ungroup() %>%
+  filter( # Some intervals have articulation rate but no formant frequencies. 
+    # We remove these.
+    !is.na(mean_int)
+  ) %>%
+  # Rename interval variable. It is convenient for plotting later on if both
+  # the 60 and 240 second data frames have the same column names.
+  rename(
+    interval = interval_60
+  )
+  
+# We repeat for the 240 second intervals.
+qb_240 <- qb_ints %>%
+  filter(!is.na(interval_240)) %>% # filter out bad intervals
+  group_by(Speaker, Vowel, formant_type, interval_240) %>%
+  summarise(
+    n_int = first(n_240),
+    mean_int = first(mean_240),
+    art_int = first(art_240),
+    amp_int = first(amp_240)
+  ) %>%
+  ungroup() %>%
+  group_by(Speaker, interval_240) %>%
+  mutate(
+    amp_int = first(amp_int)
+  ) %>%
+  ungroup() %>%
+  filter(
+    !is.na(mean_int)
+  ) %>% 
+  rename( 
+    interval = interval_240
+  )
+
+# We then merge the two with a row bind.
+qb_intervals <- bind_rows(
+    "60" = qb_60,
+    "240" = qb_240,
+    .id = "interval_length"
+  ) %>%
+  mutate(
+    interval_length = as.numeric(interval_length)
+  )
+```
+
+
+## Visualising Interval Representation
+
+We depict the interval representations for a speaker's monologue with a series
+of coloured blocks, where the colour scale represents the mean formant value for
+the relevant vowel, formant type, and interval.
+
+For example, Figure \@ref(fig:monologue-example-1):
+
+``` {r monologue-example-1, fig.dim=c(7,8), fig.cap="Example speaker's monologue by intervals."}
+# Select an example speaker
+test_speaker <- "QB_NZ_F_369"
+
+# Collect the 60 and 240 second intervals for the speaker.
+example_speaker_interval_data <- 
+  qb_intervals %>%
+  mutate(
+    vowel_formant = str_c(Vowel, '_', formant_type),
+    # The interval names represent the end point of the interval. That is,
+    # the interval names "60" is the interval from 0 seconds to 60 seconds.
+    # We want the block for each interval to be placed at the centre of the
+    # interval in our plot. In order to do that, we subtract half of the
+    # interval length for each interval.
+    interval = if_else(
+      interval_length == "60",
+      as.numeric(interval) - 30,
+      as.numeric(interval) - 120
+    ),
+    interval_length = as.numeric(interval_length)
+  ) %>%
+  filter(
+    Speaker == test_speaker
+  ) 
+
+# We now plot the intervals.
+example_speaker_interval_data %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = mean_int,
+    )
+  ) +
+  geom_tile() + 
+  facet_grid(rows = vars(interval_length)) + 
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "Interval representations of speaker formant values.",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
+```
+Figure \@ref(fig:monologue-example-1) highlights a few differences between the
+60s and 240s intervals. We see that, on the whole, the values for 60 second
+intervals achieve higher magnitudes than those of the 240 second intervals. That
+is, the longer the interval, the closer its mean value is to the overall mean of
+the monologue. The 60 second intervals, on the other hand, sometimes reach two
+standard deviations higher than the mean for the relevant vowel. We see that
+trimming the end of the monologue results in greater data loss for the 240 second
+intervals than the 60 second intervals. On the other hand, the 60 second
+intervals are more likely to lack any tokens of some vowel types than the 240
+second intervals.
+
+It is instructive to see how these intervals look alongside the actual vowel
+tokens (Figure \@ref(fig:data-and-interval-plot)).
+``` {r data-and-interval-plot, fig.dim=c(7, 14), fig.cap="Example speaker's vowel tokens with interval means (240s)."}
+data_and_interval_plot_240 <- qb_ints %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_240_start = interval_240-240
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = formant_value,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_240_start, xmax=interval_240, fill=mean_240
+    ),
+    ymin=-3, ymax=3, alpha = 0.4
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "240 second intervals with raw data",
+    x = "Time (seconds)",
+    y = "Scaled frequency",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA) +
+  facet_grid(cols = vars(formant_type), rows = vars(Vowel))
+
+data_and_interval_plot_240
+```
+Figure \@ref(fig:data-and-interval-plot) shows that extreme values in the
+intervals are often a result of a small number of token. The difference in 
+the frequency of occurrence of different vowel types within the monologue
+is also clearly illustrated. These phenomena are even more striking in the
+60 second data (Figure \@ref(fig:data-and-interval-plot-60)).
+
+``` {r data-and-interval-plot-60, fig.dim=c(7, 14), fig.cap="Example speaker's vowel tokens with interval means (240s)."}
+data_and_interval_plot_60 <- qb_ints %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_60_start = interval_60-60
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = formant_value,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_60_start, xmax=interval_60, fill=mean_60
+    ),
+    ymin=-3, ymax=3, alpha = 0.4
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "60 second intervals with raw data",
+    x = "Time (seconds)",
+    y = "Scaled frequency",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA) +
+  facet_grid(cols = vars(formant_type), rows = vars(Vowel))
+
+data_and_interval_plot_60
+```
+
+For <span style="font-variant:small-caps;">nurse</span> and
+<span style="font-variant:small-caps;">foot</span>, many of our 60 second
+intervals have only a single observation!
+
+We have also collected amplitude and articulation rate data. It is worth 
+seeing how these change in the course of our test speaker 
+(Figure \@ref(fig:example-amplitude-plot) and 
+(Figure \@ref(fig:example-articulation-plot)).
+
+``` {r example-amplitude-plot, fig.dim=c(7,8), fig.cap="Test speaker amplitude over monologue."}
+example_speaker_interval_data %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = amp_int,
+    )
+  ) +
+  geom_tile() + 
+  facet_grid(rows = vars(interval_length)) + 
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "Interval representations of speaker amplitude",
+    fill = "Scaled amplitude"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA) 
+```
+
+``` {r example-articulation-plot, fig.dim=c(7,8), fig.cap="Test speaker articulation over monologue."}
+example_speaker_interval_data %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = art_int,
+    )
+  ) +
+  #geom_raster(hjust=1) +
+  geom_tile() + 
+  facet_grid(rows = vars(interval_length)) + 
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "Interval representations of speaker articulation rate",
+    fill = "Scaled articulation rate"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA) 
+```
+
+The articulation rate plot suggests that the speaker gradually increases and
+decreases their articulation rate. The amplitude plot suggests a gradual 
+decline in amplitude over the course of the monologue.
+
+For good measure, we look at he intervals of another example speaker:
+``` {r monologue-example-2, fig.dim=c(7,8), fig.cap="Example monologue representation at 60s and 240s intervals."}
+test_speaker_2 = "QB_NZ_M_384"
+
+qb_intervals %>%
+  mutate(
+    vowel_formant = str_c(Vowel, '_', formant_type),
+    # Interval values are the end point of the interval, 
+    # so to plot together requires us to subtract 240 from
+    # the interval variable for 240s intervals and
+    # 60 from the 60s intervals.
+    interval = if_else(
+      interval_length == "60",
+      as.numeric(interval) - 30,
+      as.numeric(interval) - 120
+    ),
+    interval_length = as.numeric(interval_length)
+  ) %>%
+  filter(
+    Speaker == test_speaker_2
+  ) %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = mean_int,
+    )
+  ) +
+  geom_tile() + 
+  facet_grid(rows = vars(interval_length)) + 
+  labs(
+    title = glue("{test_speaker_2}"),
+    subtitle = "Interval representations of speaker formant values.",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
+```
+We draw the same basic conclusions here in terms of the difference between 
+the 60 second and 240 second intervals. There's data gaps in the shorter
+intervals and a tendency towards more extreme values. In this case, unlike 
+in Figure \@ref(fig:monologue-example-1), both interval sizes capture the full
+monologue more-or-less neatly.That is, we don't have obvious data loss at the
+end of the monologue in the 240 second intervals.
+
+# Imputation
+
+When carrying out PCA, we want a row for each interval and a column for each
+vowel and formant type. PCA requires complete observations, so each row will
+need to have a value in each column. Given this, the absence of data in many of
+our 60 second intervals is a problem.
+
+We have also seen that some interval values are quite 
+extreme, especially with the 60 second intervals, and that this is sometimes
+the result of an interval having only a single token of a given vowel within
+it. As such, we may also impute within non-empty intervals. This will be 
+discussed immediately after we have looked at the intervals with missing data.
+
+One way to get a handle on whether (and, if so, how much) imputation is required
+is to look at the distribution of intervals by number of vowel types
+present in the interval. This is generated by the following code.
+``` {r intervals-by-type, fig.cap="Distribution of intervals by count of vowel types represented."}
+vowel_type_counts <- qb_intervals %>%
+  group_by(interval_length, Speaker, interval) %>%
+  summarise(
+    n = n_distinct(Vowel)
+  ) 
+
+vowel_type_counts %>%
+  ggplot(
+    aes(
+      x = n,
+      colour = as.factor(interval_length)
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+  scale_x_continuous(
+    breaks=seq(1, 11, 1),
+    limits = c(1, 11)
+  ) +
+  labs(
+    title = "Distribution of Intervals by Count of Vowel Types",
+    colour = "Interval length",
+    x = "Number of vowel types",
+    y = "Intervals (count)"
+  )
+```
+
+Figure \@ref(fig:intervals-by-type) shows that the vast majority of 60 second
+intervals are incomplete. The
+precise percentage of incomplete observations is 
+`r round(vowel_type_counts %>% filter(interval_length=="60", n!=11) %>% nrow() / vowel_type_counts %>% filter(interval_length=="60") %>% nrow() * 100, 2)`%. 
+We thus need to introduce some form of imputation to avoid radical data loss.
+
+Before imputing, it is worth considering whether any vowels have so little data
+that it would be unwise to impute values for them. 
+this is the reason that Brand et al. (2021) remove <span style="font-variant:small-caps;">foot</span> from their dataset. To determine which vowels, if any, ought to be removed, we look at the rate at
+which vowels are missing from intervals.
+
+``` {r missing-int-rate, fig.cap="Missing interval rates by vowel"}
+missing_interval_rate_plot <- qb_intervals %>%
+  ungroup() %>%
+  group_by(interval_length, Speaker) %>%
+  mutate(
+    speaker_intervals = n_distinct(interval)
+  ) %>%
+  group_by(interval_length, Speaker, Vowel) %>%
+  mutate(
+    vowel_intervals = n_distinct(interval)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    missing_intervals = (speaker_intervals - vowel_intervals)/speaker_intervals
+  ) %>%
+  group_by(interval_length, Speaker, Vowel) %>%
+  summarise(
+    missing_intervals = first(missing_intervals)
+  ) %>%
+  ggplot(
+    aes(
+      x = missing_intervals,
+      colour = Vowel
+    )
+  ) +
+  scale_color_manual(
+    values = vowel_colours_with_foot # vowel colours from Brand
+  ) +
+  geom_freqpoly(bins = 10) +
+  # coord_cartesian(
+  #   xlim=c(0,1)
+  # )
+  scale_x_continuous(limits=c(0,1)) +
+  labs(
+    title = "Distribution of missing interval rates by vowel",
+    x = "Missing interval rate",
+    y = "Speaker count"
+  ) +
+  facet_grid(cols=vars(interval_length))
+
+ggsave(
+  filename = here('plots', 'missing_interval_rate_plot.png'), 
+  plot = missing_interval_rate_plot, 
+  dpi = 500,
+  height = 12,
+  width = 20,
+  unit = 'cm'
+)
+
+missing_interval_rate_plot
+```
+
+Figure \@ref(fig:missing-int-rate) shows a very high missing interval rate for
+<span style="font-variant:small-caps;">foot</span>. Its peak seems to be just
+under 50% and it has quite a long tail. There is a non-trival number of speakers
+with 60% of their intervals missing <span style="font-variant:small-caps;">foot</span>! 
+If we imputed here, we would be
+imputing nearly half of our data. Given this, we will remove 
+<span style="font-variant:small-caps;">foot</span> from our analysis. 
+<span style="font-variant:small-caps;">nurse</span> has also been identified as
+sparse, but its behaviour in the distributions above more closely
+matches the behaviour of the other vowels than does 
+<span style="font-variant:small-caps;">foot</span>.
+
+``` {r remove-foot}
+# We remove all tokens of FOOT and ensure that it is not maintained as a level
+# in our factor variable (otherwise it might appear in plots, etc, later on).
+qb_intervals <- qb_intervals %>%
+  filter(
+    Vowel != "FOOT"
+  ) %>%
+  mutate(
+    Vowel = fct_drop(Vowel)
+  )
+```
+
+
+We look again at the count of missing vowel types for each interval in the 
+dataset.
+
+``` {r intervals-by-type-no-foot, fig.cap='Distribution of intervals by count of vowel types represented (<span style = "font-variant: small-caps;">foot</span> excluded).'}
+vowel_type_counts <- qb_intervals %>%
+  group_by(interval_length, Speaker, interval) %>%
+  summarise(
+    n = n_distinct(Vowel)
+  ) 
+
+vowel_type_counts%>%
+  ggplot(
+    aes(
+      x = n,
+      colour = as.factor(interval_length)
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+    scale_x_continuous(
+    breaks=seq(1, 10, 1),
+    limits = c(1, 10)
+  ) +
+  labs(
+    title = "Distribution of Intervals by Count of Vowel Types",
+    colour = "Interval length",
+    x = "Number of vowel types",
+    y = "Intervals (count)"
+  )
+
+```
+Figure \@ref(fig:intervals-by-type-no-foot) suggests that accepting all 60 
+second intervals with at least 7 vowel types represented will save most of
+the data. This will mean we imputed data for up to three vowel types within
+an interval. We will also impute values for any 240 second interval with
+values for at least 9 vowel types.
+
+Our second aim in imputation is to reduce the influence of single data points
+within an interval.^[An earlier version of this project only kept
+intervals with three data points. Anything less was considered inappropriate
+for a useful mean value.] In order to do this, we will add across-monologue 
+mean tokens to intervals until they have at least three tokens for each vowel.
+We then take the mean of the three tokens.
+
+Before doing this, we remove all speakers who have _no_ values for any one of
+the vowel types.
+``` {r filter-speakers-missing-vowels} 
+no_vowel_speakers <- qb_intervals %>%
+  group_by(Speaker) %>%
+  summarise(
+    n_vowels = n_distinct(Vowel)
+  ) %>%
+  filter(
+    n_vowels < 10
+  ) %>%
+  pull(Speaker)
+
+qb_intervals <- qb_intervals %>%
+  filter(
+    !Speaker %in% no_vowel_speakers
+  )
+```
+This step removed `r length(no_vowel_speakers)` speakers from the data.
+
+Since our formant, amplitude, and articulation rate values are scaled for each
+speaker (and, for formant values, each vowel), the appropriate mean value to
+impute is `0`. We will impute formant values first, and then check whether any
+amplitude or articulation rate scores are missing.
+
+``` {r}
+impute_formants <- function(df, cut_off) {
+  
+  # Inputs: 
+  #   1) df: dataframe with speaker, interval, vowel, formant_type, mean_int,
+  #   art_int, amp_int, n_int columns.
+  #   2) cut_off: integer value representing minimum number of vowel types 
+  #   required to keep interval.
+  
+  
+  df <- df %>%
+    
+    # First calculate how many vowel types in each interval.
+    group_by(
+      Speaker, interval
+    ) %>%
+    mutate(
+      n_vowels = n_distinct(Vowel)
+    ) %>%
+    ungroup() %>%
+  
+    # Remove all intervals with less vowel types than the cut off value.
+    filter(
+      n_vowels >= cut_off
+    ) %>%
+    
+    mutate(
+      formant_type = as.factor(formant_type)
+    ) %>%
+    
+    # Group and use summary to create a dataframe with a row for each
+    # Speaker, interval, vowel, and formant_type, including those 
+    # vowels for which there is no value (note .drop=FALSE ensures
+    # that there is a row for all levels of the Vowel factor).
+    group_by(Speaker, interval, Vowel, formant_type, .drop=FALSE) %>%
+    summarise(
+      mean_int = first(mean_int),
+      art_int = first(art_int),
+      amp_int = first(amp_int),
+      n_vowels = first(n_vowels),
+      n_int = first(n_int)
+    ) %>%
+    ungroup() %>%
+    
+    # Ensure that interval level data is maintained for all levels of Vowel.
+    # (It will be set to NA for any of the absent levels in the previous step)
+    group_by(Speaker, interval) %>% 
+    mutate(
+      art_int = max(art_int, na.rm=TRUE),
+      amp_int = max(amp_int, na.rm=TRUE),
+    ) %>%
+    ungroup() %>%
+  
+    mutate(
+      # Calculate imputed value for intervals with 1 or 2 tokens.
+      imputed_2 = mean_int * 2/3, # Imputed value if there are 2 real tokens.
+      imputed_3 = mean_int * 1/3, # Imputed value if there is 1 real token.
+      
+      # Any NA values of n_tokens will be those intervals with 0 tokens. We 
+      # make this clear now.
+      n_int = if_else(is.na(n_int), 0L, n_int),
+      
+      # Set value to 0 for intervals with no vowel tokens.
+      mean_int = if_else(n_int == 0, 0, mean_int), 
+      
+      # Set value to relevant value for intervals with 1 or 2 tokens of given 
+      # vowel.
+      mean_int = if_else(n_int == 1, imputed_3, mean_int), 
+      mean_int = if_else(n_int == 2, imputed_2, mean_int)
+    ) %>%
+    
+    # Remove intermediate variables.
+    select(-c(imputed_2, imputed_3))
+}
+```
+
+
+It is worth pausing over why the imputed value for an interval with two real
+tokens, and one imputed token is `mean_int * 2/3`, where `mean_int` is the mean
+value for the interval calculated from the two real tokens. If our two tokens
+are $x_1$ and $x_2$, and our imputed value is $x_I$, then the mean of all three
+is $\frac{x_1 + x_2 + x_I}{3}$. But, since $x_I = 0$, this is 
+$\frac{x_1 + x_2}{3}$, which is equal to 
+$\frac{x_1 + x_2}{2} \times \frac{2}{3}$. $\frac{x_1 + x_2}{2}$ is, of course,
+the mean calculated for the interval before imputation. The same reasoning 
+applies to intervals with one real token.
+
+To apply the imputation function, we nest the `qb_intervals` data frame by
+`interval_length`. This enables us to process the data for each length
+separately and with distinct cut off values. As set out above, we set the cut
+off at 7 for the 60 second data. we will set it at 9 for the 240s data.
+
+``` {r apply-imputation}
+qb_imputed <- qb_intervals %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    cut_off = if_else(interval_length == "60", true=7, false=9),
+    imputed = map2(data, cut_off, impute_formants)
+  ) %>%
+  select(interval_length, imputed) %>%
+  unnest(cols = imputed)
+  
+```
+
+We now quantify how much imputation has affected our data. First, we consider
+how many mean tokens we have imputed.
+
+``` {r imputation-by-vowel, fig.cap = "Distributions of tokens per vowel, per interval."}
+qb_imputed %>%
+  # We filter out half of the rows so that counts in the plot represent the
+  # number of intervals.
+  filter( 
+    formant_type == "F1_50" 
+  ) %>%
+  ggplot(
+    aes(
+      x = n_int,
+      colour = Vowel
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+  labs(
+    title = "Distributions of tokens per vowel, per interval"
+  ) +
+  facet_grid(
+    cols = vars(as.factor(interval_length)),
+    scales = "free"
+  ) +
+  scale_color_manual(
+    values = vowel_colours
+  ) +
+  coord_cartesian(xlim=c(0,2))
+```
+Figure \@ref(fig:imputation-by-vowel) says that just under 600 60 second
+intervals have no token of <span style="font-variant:small-caps;">nurse</span>,
+and around 800 have only one. All of these intervals will have been subject to
+imputation. The difference between the left and right panes is enough to see,
+impressionistically, that the 240 second intervals are barely subject to
+imputation. For instance, around 50 240 second intervals have two tokens of 
+<span style="font-variant: small-caps;">nurse</span> and so are having an 
+additional mean valued token added by the imputation process.
+
+We can also look at total number of intervals with 1 or 2 tokens for a given 
+vowel.
+``` {r}
+qb_imputed %>%
+  group_by(interval_length) %>%
+  mutate(
+    total_count = n() # one row for each formant type.
+  ) %>%
+  filter(n_int < 3) %>%
+  group_by(interval_length, n_int) %>%
+  summarise(
+    n = n(),
+    total_count = first(total_count),
+    rate = n/total_count
+  )
+```
+
+Around 1.6% of 240s data points are affected, whereas around 33.5% of the
+data points from the 60s intervals are affected.
+
+This should not worry us too much. Insofar as this imputation affects our
+results, it should tend towards obscuring covariation rather than creating
+spurious covariation. Moreover, the values in our imputed dataset will be more
+stable than those which contain mean interval scores determined by a single data
+point.
+
+We also check to see if there is any need to impute amplitude or articulation
+rate information. Since the mean values for these variables were taken at the
+interval level, rather than at the level of each vowel, we should expect at the
+outset that no intervals will be without amplitude or articulation rate data.
+
+``` {r}
+qb_imputed %>%
+  filter(is.na(art_int))
+
+qb_imputed %>%
+  filter(is.na(amp_int))
+```
+There are no missing amplitude or articulation rate data points in our
+interval representation of the data.
+
+Finally, we visualise what imputation is doing in the case of a particular
+speaker in the corpus.
+``` {r example-imputation-speaker, fig.dim=c(7,9), fig.cap="Example speaker imputation with number of tokens in each interval"}
+qb_60 <- qb_intervals %>%
+  filter(
+    interval_length == 60
+  ) %>%
+  ungroup() %>%
+  select(-interval_length)
+
+
+imputed_qb_60 <- qb_imputed %>%
+  filter(
+    interval_length == 60
+  ) %>%
+  ungroup() %>%
+  select(-interval_length)
+
+bind_rows("Original" = qb_60, "Imputed" = imputed_qb_60, .id="data_source") %>%
+  ungroup() %>%
+  mutate(
+    vowel_formant = str_c(Vowel, '_', formant_type),
+    interval = as.numeric(interval) - 30, #collect mid points
+    interval_length = 60,
+    data_source = factor(data_source, levels = c("Original", "Imputed"))
+  ) %>%
+  filter(
+    Speaker == "QB_NZ_F_103"
+  ) %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      x = interval,
+      width = interval_length,
+      fill = mean_int,
+      label = n_int
+    )
+  )  +
+  geom_tile() + 
+  geom_label() +
+  facet_grid(rows = vars(data_source)) + 
+  labs(
+    title = glue("QB_NZ_F_103"),
+    subtitle = "Interval representations of speaker formant values (imputed and original).",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
+```
+Figure \@ref(fig:example-imputation-speaker) shows the deletion of FOOT, the
+filling up of missing values with the mean value for the given vowel and formant,
+and the change towards the mean of one and two-token intervals.^[It is worth
+noting that the precise shift in colour between the original and imputed version
+of these low-token intervals can be affected by the viewers position with
+respect to their monitor or printing.]
+
+# Speaker Contributions to Processed Data
+
+Each speaker contributes quite different amounts of data to our corpus. we will
+control for this at later stages of the project. At this stage, we simply look
+at the distributions of data amount by speaker.
+
+``` {r token-count-by-speaker, fig.cap="Distribution of token counts by speaker."}
+qb_vowels %>%
+  group_by(Speaker) %>%
+  summarise(
+    token_count = n()
+  ) %>%
+  ggplot(
+    aes(
+      x = token_count
+    )
+  ) +
+  geom_histogram(binwidth=10) +
+  labs(
+    title = "Distribution of Token Counts by Speaker",
+    x = "Token Count"
+  )
+```
+We see from Figure \@ref(fig:token-count-by-speaker) that there is a very long
+right tail to the distribution. We have 5 speakers with monologues with more than
+1500 tokens, while the vast majority of speakers have less than 500 tokens.
+
+We also plot the number of intervals per speaker.
+``` {r intervals-by-speaker, fig.cap="Distribution of interval count by speaker."}
+qb_imputed %>%
+  group_by(interval_length, Speaker) %>%
+  summarise(
+    n_intervals = n_distinct(interval)
+  ) %>%
+  ggplot(
+    aes(
+      x = n_intervals
+    )
+  ) + 
+  geom_histogram(binwidth=1) +
+  facet_grid(cols = vars(interval_length), scales = "free") +
+  labs(
+    title = "Interval Count by Speaker"
+  )
+```
+Figure \@ref(fig:intervals-by-speaker) shows that the number of intervals per
+speaker is very low in the 240s data, with a mode of around 5 for the 60 second
+intervals.
+
+# Summary Plot for Paper
+
+It is useful to produce a plot which presents the raw data and the interval
+values for the first and second formant values _and_ the maximum amplitude
+values. We do this using the `patchwork` package. We first make plots for the
+formant data at each interval length, combine this with the amplitude data
+for the relevant interval length to produce two plots (one for each interval
+length), we then place the two plots together, side-by-side.
+``` {r}
+# 60 second interval plots
+
+## Formant plot
+data_60s <- qb_ints %>%
+  select(
+    Speaker, Vowel, time_unscaled, formant_type, formant_value, interval_60, 
+    intensity_max
+  ) %>%
+  rename(
+    interval = interval_60,
+  ) %>%
+  full_join(
+    qb_imputed %>%
+      filter(
+        interval_length == 60
+      ) %>%
+      select(Speaker, interval, Vowel, formant_type, mean_int, amp_int)
+  ) %>%
+  # Label changes
+  mutate(
+    formant_type = str_replace(formant_type, "_50", "")
+  )
+
+
+formant_60_plot <- data_60s %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_start = interval-60
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = formant_value,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_start, xmax=interval, fill=mean_int
+    ),
+    ymin=-3, ymax=3, alpha = 0.4
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    title = "60 Second Intervals",
+    subtitle = "Scaled Formant Frequency",
+    x = "Time (seconds)",
+    y = "Scaled frequency",
+    fill = "Interval value"
+  ) +
+  scale_fill_scico(
+    limits=c(-1.5, 1.5),
+    palette="imola", 
+    midpoint = 0, 
+    na.value = NA
+  ) +
+  facet_grid(cols = vars(formant_type), rows = vars(Vowel)) +
+  theme(strip.text.y = element_text(size = 6))
+
+formant_60_plot
+
+amp_60_plot <- data_60s %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_start = interval-60
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = intensity_max,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_start, xmax=interval, fill=amp_int
+    ),
+    ymin=-3, ymax=3, alpha = 0.4,
+    show.legend = FALSE
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    subtitle = "Scaled Amplitude",
+    x = "Time (seconds)",
+    y = "Scaled amplitude"
+  ) +
+  scale_fill_scico(
+    palette="imola", 
+    midpoint = 0, 
+    na.value = NA,
+    limits=c(-1.5, 1.5)
+  ) +
+  ylim(-3,3)
+
+combined_60 <- formant_60_plot/amp_60_plot + 
+  plot_layout(
+    heights = c(7, 1),
+    guides = "collect"
+  )
+combined_60
+```
+
+We now do the same for the 240 second intervals.
+``` {r}
+# 240 second interval plots
+
+## Formant plot
+data_240s <- qb_ints %>%
+  select(
+    Speaker, Vowel, time_unscaled, formant_type, formant_value, interval_240, 
+    intensity_max
+  ) %>%
+  rename(
+    interval = interval_240,
+  ) %>%
+  full_join(
+    qb_imputed %>%
+      filter(
+        interval_length == 240
+      ) %>%
+      select(Speaker, interval, Vowel, formant_type, mean_int, amp_int)
+  ) %>%
+  mutate(
+    formant_type = str_replace(formant_type, "_50", "")
+  )
+
+
+formant_240_plot <- data_240s %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_start = interval-240
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = formant_value,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_start, xmax=interval, fill=mean_int
+    ),
+    ymin=-3, ymax=3, alpha = 0.4
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    title = "240 Second Intervals",
+    subtitle = "Scaled Formant Frequency",
+    x = "Time (seconds)",
+    y = "Scaled frequency",
+    fill = "Interval value"
+  ) +
+  scale_fill_scico(
+    limits=c(-1.5, 1.5), 
+    palette="imola", 
+    midpoint = 0, 
+    na.value = NA
+  ) +
+  facet_grid(cols = vars(formant_type), rows = vars(Vowel)) +
+  theme(strip.text.y = element_text(size = 6))
+
+formant_240_plot
+
+amp_240_plot <- data_240s %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  mutate(
+    interval_start = interval-240
+  ) %>%
+  ggplot( 
+    aes(
+      x = time_unscaled,
+      y = intensity_max,
+    )
+  ) +
+  geom_rect(
+    aes(
+      x=NULL, y=NULL, xmin=interval_start, xmax=interval, fill=amp_int
+    ),
+    ymin=-3, ymax=3, alpha = 0.4, show.legend = FALSE
+  ) +
+  geom_point(size=0.5, alpha=0.5) +
+  labs(
+    subtitle = "Amplitude Data",
+    x = "Time (seconds)",
+    y = "Scaled amplitude"
+  ) +
+  scale_fill_scico(
+    limits=c(-1.5, 1.5),
+    palette="imola", 
+    midpoint = 0, 
+    na.value = NA
+  ) +
+  ylim(-3, 3) # may clip some raw data points
+
+combined_240 <- formant_240_plot/amp_240_plot + plot_layout(heights = c(7, 1))
+combined_240
+```
+
+Finally, we combine the two plots together.
+``` {r combined-plot, fig.cap = "Imputated formant and amplitude data at interval level with scaled tokens for an example speaker."}
+combined_plot <- (
+    formant_60_plot + 
+    (formant_240_plot + labs(y = NULL))
+  ) /
+  (
+    amp_60_plot + 
+    (amp_240_plot + labs(y = NULL))
+  ) +
+  plot_layout(heights = c(8, 1), guides = "collect") +
+  plot_annotation(
+    title = glue('{test_speaker}')
+  ) &
+  # We apply the scaling again with hard coded limits so that the scales
+  # scales are collected together properly.
+  scale_fill_scico(
+    limits=c(-1.5, 1.5),
+    palette="imola", midpoint = 0, na.value = NA
+  )
+
+# A4 output
+# https://stackoverflow.com/questions/16783019/how-to-save-a-graph-as-an-a4-size-pdf-file-under-windows-system-r-ggplot2/16783151
+ggsave(
+  filename=here('plots', glue("{test_speaker}_combined.png")), 
+  plot = combined_plot, 
+  #device = cairo_pdf, #for pdf output.
+  width = 297, 
+  height = 210, 
+  dpi = 500,
+  units = "mm"
+)
+
+combined_plot 
+```
+
+Figure \@ref(fig:combined-plot) presents the scaled formant and amplitude data
+for each token for an example speaker along with the interval values after
+imputation at both interval lengths.
+
+We also plot a vowel space style plot for this speaker to indicate how large the
+variation in formant frequencies is for each vowel.
+``` {r extreme-int-values, fig.cap = "Extreme interval values for each vowel. NB: the F1 and F2 values for a single point may come from distinct intervals."}
+# To go from interval values to the vowel space, we need to get the mean 
+# and SD for each vowel for the test speaker.
+speaker_stats <- qb_vowels %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  pivot_longer(
+    cols = contains("_50"),
+    names_to = "formant_type",
+    values_to = "formant_value"
+  ) %>%
+  group_by(Vowel, formant_type) %>%
+  summarise(
+    speaker_mean = mean(formant_value),
+    speaker_sd = sd(formant_value)
+  )
+
+# Now combine with interval data
+speaker_vs_data <- qb_imputed %>%
+  filter(
+    Speaker == test_speaker
+  ) %>% 
+  left_join(speaker_stats) %>%
+  mutate(
+    unscaled_value = speaker_mean + speaker_sd * mean_int
+  ) %>%
+  group_by(interval_length, Vowel, formant_type) %>%
+  summarise(
+    min_unscaled = min(unscaled_value),
+    max_unscaled = max(unscaled_value),
+  ) %>%
+  mutate(
+    mid_unscaled = min_unscaled + 0.5*(max_unscaled - min_unscaled)
+  ) %>%
+  pivot_longer(
+    cols = contains('_unscaled'),
+    names_to = 'extremity',
+    values_to = 'formant_value'
+  ) %>%
+  mutate(
+    extremity = str_sub(extremity, end = 3L)
+  ) %>%
+  pivot_wider(
+    names_from = formant_type,
+    values_from = formant_value
+  )
+
+# Plot in vowel space.
+diff_plot <- speaker_vs_data %>%
+  ggplot(
+      aes(
+        x = F2_50,
+        y = F1_50,
+        colour = Vowel,
+        label = Vowel
+      )
+    ) +
+  geom_label_repel(
+    show.legend = FALSE,
+    alpha = 0.7,
+    min.segment.length = 0,
+    size = 2.5,
+    nudge_x = 200,
+    nudge_y = -60,
+    # Get midpoints of each line
+    data = . %>%
+      filter(
+        extremity == "mid",
+        !Vowel %in% c("DRESS", "NURSE")
+      )
+  ) +
+  geom_label_repel(
+    show.legend = FALSE,
+    alpha = 0.7,
+    min.segment.length = 0,
+    size = 2.5,
+    nudge_x = -200,
+    nudge_y = 40,
+    # Get midpoints of each line
+    data = . %>%
+      filter(
+        extremity == "mid",
+        Vowel %in% c("DRESS", "NURSE")
+      )
+  ) +
+  geom_point(
+    show.legend = FALSE,
+    # remove midpoints
+    data = . %>%
+      filter(
+        extremity != "mid"
+      )
+  ) +
+  geom_line(show.legend=FALSE) +
+  scale_x_reverse(expand = expansion(mult = 0.1)) +
+  scale_y_reverse(expand = expansion(mult = 0.1)) +
+  scale_colour_manual(values = vowel_colours) +
+  facet_wrap(facets = vars(interval_length)) +
+  labs(
+    title = glue("{test_speaker} Extreme Interval Values"),
+    x = "F1 (Hz)",
+    y = "F2 (Hz)"
+  )
+
+diff_plot
+```
+
+Figure \@ref(fig:extreme-int-values) shows the range of variation in the data
+we will feed into PCA for this speaker. That is, each value is a mean value
+for an interval after imputation. Since the F1 and F2 data for each vowel are
+treated as distinct variables, a single point may depict data from two 
+distinct intervals. However, the plot is quite useful insofar as it gives an 
+visual indication of the upper limit of variation in the data given to PCA
+for this speaker.
+
+# Intervals from Permuted Data
+
+At a later stage of this project a permutation test will be carried out, 
+applying the same processing carried out in this document and analysis 
+carried out in the `corpus_pca.Rmd` document 1000 times on data which has had
+the time variable permuted. This will be done in the file at 
+`scripts/permutation_test.R`. We illustrate the interval representation 
+aspect of the permutation process by following it through for a 
+single permutation.
+
+The following chunk defines the permutation function. It works by taking the
+data as given after the preprocessing stage of the project, divides the data up
+by speaker, calculates how many tokens each speaker has, and then runs through
+each token taking a random time stamp from the `time_unscaled` variable and
+assigning it to the token without replacement. That is, we shuffle the time
+stamps for each speaker.
+``` {r}
+permute_data <- function(df) {
+  # df is assumed to be of same form as the data output from the preprocessing
+  # stage.
+  df %>%
+    # We permute the data separately for each speaker.
+    group_by(Speaker) %>%
+    # 
+    mutate(
+      num_obs = n(),
+      time_unscaled = sample(
+        x = time_unscaled, 
+        size = first(num_obs), 
+        replace = FALSE
+      )
+    ) %>%
+    arrange(
+      time_unscaled, .by_group = TRUE
+    ) %>%
+    ungroup() %>%
+    select(-num_obs)
+}
+```
+
+Before applying the permutation function, we exclude foot. After permutation
+we apply the `create_intervals` function defined above.
+
+``` {r}
+qb_no_foot <- qb_vowels %>%
+  filter(
+    !Vowel == "FOOT"
+  ) %>%
+  mutate(
+    Vowel = fct_drop(Vowel)
+  )
+
+permuted_vowels <- permute_data(qb_no_foot)
+permuted_intervals <- create_intervals(permuted_vowels)
+```
+
+We transform the permuted intervals so that we have dataframes with two rows
+for each interval rather than two rows for each token. We apply the imputation
+function to each separately (we could have used the nesting method set out
+above, but this method works as well).
+
+``` {r}
+perm_60 <- permuted_intervals %>%
+  filter(!is.na(interval_60)) %>% # filter out bad intervals
+  group_by(Speaker, Vowel, formant_type, interval_60) %>%
+  summarise(
+    n_int = first(n_60),
+    mean_int = first(mean_60),
+    art_int = first(art_60),
+    amp_int = first(amp_60)
+  ) %>%
+  ungroup() %>%
+  # Some vowels may be missing amplitude data, so we add this
+  # group_by + mutate to ensure that we get at least one.
+  group_by(Speaker, interval_60) %>%
+  mutate(
+    amp_int = first(amp_int)
+  ) %>%
+  ungroup() %>%
+  filter( # Some intervals have articulation rate (~70) but no freq. We remove these.
+    !is.na(mean_int)
+  ) %>%
+  # Rename interval variable so that names match for
+  # both interval sizes (useful for plotting later).
+  rename(
+    interval = interval_60
+  )
+
+perm_240 <- permuted_intervals %>%
+  filter(!is.na(interval_240)) %>% # filter out bad intervals
+  group_by(Speaker, Vowel, formant_type, interval_240) %>%
+  summarise(
+    n_int = first(n_240),
+    mean_int = first(mean_240),
+    art_int = first(art_240),
+    amp_int = first(amp_240)
+  ) %>%
+  ungroup() %>%
+  # Some vowels may be missing amplitude data, so we add this
+  # group_by + mutate to ensure that we get at least one.
+  group_by(Speaker, interval_240) %>%
+  mutate(
+    amp_int = first(amp_int)
+  ) %>%
+  ungroup() %>%
+  filter( # Some intervals have articulation rate (~70) but no freq. We remove these.
+    !is.na(mean_int)
+  ) %>%
+  # Rename interval variable so that names match for
+  # both interval sizes (useful for plotting later).
+  rename(
+    interval = interval_240
+  )
+
+# Run imputation with the same cut offs as the original.
+imputed_perm_60 <- impute_formants(perm_60, 7)
+imputed_perm_240 <- impute_formants(perm_240, 9)
+```
+
+We now look at the formant data for our original test speaker, comparing their
+original and permuted data.
+``` {r real-and-perm-example, fig.dim=c(7,8), fig.cap= "Original and permuted formant data for example speaker, after imputation."}
+bind_rows("Permuted" = imputed_perm_60, "Original" = imputed_qb_60, .id="data_source") %>%
+  mutate(
+    vowel_formant = str_c(Vowel, '_', formant_type),
+    interval = as.numeric(interval) - 30, # Want midpoint of interval.
+    interval_length = 60
+  ) %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = mean_int,
+    )
+  ) +
+  #geom_raster(hjust=1) +
+  geom_tile() + 
+  facet_grid(rows = vars(data_source)) + 
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "Interval representations of speaker formant values.",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
+```
+There is no immediately obvious different between the two. This is a good sign. 
+Our permutation process is not introducing any obvious structure.
+
+We can also look at the amplitude data for both the original and permuted data.
+``` {r real-and-perm-example-amplitude, fig.dim=c(7,8), fig.cap= "Original and permuted amplitude data for example speaker, after imputation."}
+imputed_qb_60 <- qb_imputed %>%
+  filter(
+    interval_length == 60
+  ) %>%
+  ungroup() %>%
+  select(-interval_length)
+
+bind_rows("Permuted" = imputed_perm_60, "Original" = imputed_qb_60, .id="data_source") %>%
+  mutate(
+    vowel_formant = str_c(Vowel, '_', formant_type),
+    interval = as.numeric(interval) - 30, # Want midpoint of interval.
+    interval_length = 60
+  ) %>%
+  filter(
+    Speaker == test_speaker
+  ) %>%
+  ggplot(
+    aes(
+      y = vowel_formant,
+      width = interval_length,
+      x = interval,
+      fill = amp_int,
+    )
+  ) +
+  #geom_raster(hjust=1) +
+  geom_tile() + 
+  facet_grid(rows = vars(data_source)) + 
+  labs(
+    title = glue("{test_speaker}"),
+    subtitle = "Interval representations of speaker amplitude values.",
+    fill = "Scaled formant value"
+  ) +
+  scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
+```
+Figure \@ref(fig:real-and-perm-example-amplitude) shows some evidence of
+structured change due to the time course in the real data. This structure may
+be being removed by permutation. This will be borne out in the subsequent 
+analysis.
+
+# Export for Next Step
+
+We now export the interval data and the imputed interval data for our next
+steps. We also export our example permuted data set, as it will be useful for
+illustration in the `corpus_pca.Rmd` document.
+
+**NB:** if you are following the process from scratch you will need to change
+the chunk option `eval` to `TRUE`.
+
+``` {r, eval=FALSE}
+
+# Save the non-imputed intervals
+write_rds(
+  qb_intervals, 
+  here("processed_data", "intervals", "qb_intervals.rds")
+)
+
+# Save the imputed intervals
+write_rds(
+  qb_imputed, 
+  here("processed_data", "intervals", "qb_imputed.rds")
+)
+
+# Merge and save example permuted intervals. The same example will be used
+# for illustration later.
+bind_rows(
+    "60" = imputed_perm_60,
+    "240" = imputed_perm_240,
+    .id = "interval_length"
+  ) %>%
+  mutate(
+    interval_length = as.numeric(interval_length)
+  ) %>%
+  write_rds(here("processed_data", "intervals", "perm_imputed.rds"))
+```

@@ -1,0 +1,3176 @@
+---
+title: "SM3. Corpus-level PCA analysis"
+subtitle: "Supplementary Material for 'The overlooked effect of amplitude on within-speaker vowel variation'"
+author: "Joshua Wilson Black, Jen Hay, Lynn Clark, James Brand"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  # bookdown::pdf_document2:
+  #   toc: yes
+  bookdown::html_document2:
+    fig_caption: true
+    toc: true
+    toc_float: true
+    theme: flatly
+    collapsed: no
+    df_print: paged
+    code_folding: show
+---
+
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #95A044;
+}
+
+pre {
+  max-height: 300px;
+  overflow-y: 300px;
+}
+</style>
+
+``` {r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  fig.align='center', 
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE
+  )
+```
+
+# Overview
+
+This document applies PCA to the interval representations of the QuakeBox
+monologues at the corpus level. It covers, in turn:
+
+1. PCA analysis of the formant data using both 60 and 240 second intervals, 
+including:
+    1. analysis of correlation matrices,
+    2. application and interpretation of PCA, and
+    3. permutation tests.
+2. partial repetition of the analysis with a corpus balanced so that each
+speaker contributes equal data, 
+3. full repetition of the analysis with amplitude included as a variable, and
+4. inspection of speaker-interval vowel spaces in terms of their PC scores.
+
+We find that a strong association of F1 values, where F1 values increase and
+decrease together, is present in the original dataset but is not found when the
+time variable is permuted. In addition, we find evidence that this relationship
+is explained by changes in amplitude over the course of speaker monologues. 
+This evidence is bolstered in the next supplementary (`models.Rmd`).
+
+When we interpret the results of our PCA analysis against our original
+data, we find that changes in relative amplitude of speakers make a significant
+difference to the character of their vowel spaces. We illustrate this by showing
+that judgements about vowel space similarity between speakers are significantly
+affected by the relative amplitude at which we sample a speaker.^[These 
+judgements can be further investigated by means of the project 
+[Shiny app](https://nzilbbshiny.canterbury.ac.nz/app/vs_similarity_shiny/).]
+
+**Connection between SM3 and paper:** In these supplementary materials, we aim 
+to remain as close as possible to the actual path which our research took. We
+believe this is important for exploratory research of this sort. This 
+supplementary is the one which diverges  most from the structure of the paper. 
+The material directly relevant for the paper is in Section 5 and Section 6.
+Sections 3 and 4 present PCA analyses which were initially carried out to find
+_stylistic_ covariation (as explained in Section 1.1 of the paper.) 
+If the reader is only interested in the specific analysis presented in the
+paper, we still recommend
+reading Section 3 to understand the general approach to PCA before skipping 
+forward to Section 5. The PCA analysis carried out in Section 5 of this 
+document corresponds to Section 3 of the paper. 
+Section 6 of this document, then moves from the PCA in Section 
+3 back to vowel spaces of actual speakers. This corresponds to Section 4.1 of
+the paper. We investigate what difference is made to these vowel spaces by
+changes in PC scores. Much of this section covers establishing two Lobanov-based
+normalising methods for this data, with a view to exploring whether 
+amplitude-driven variation can be controlled _via_ normalisation. Section 6.3
+is the most important section for the paper, as it deals with the effect of 
+amplitude on judgements of speaker similarity.
+
+# Loading data and packages
+
+``` {r import, message=FALSE}
+# PCA visualisations
+library(factoextra)
+
+# Pairwise correlation visualisation
+library(languageR)
+library(GGally)
+library(gridGraphics)
+
+# Tidyverse and friends
+library(tidyverse)
+library(scales)
+library(glue)
+library(patchwork)
+library(scico)
+
+# Package for inline shiny app.
+library(shiny)
+
+# Filepath management
+library(here)
+
+vowel_colours = c(
+  DRESS = "#9590FF",
+  FLEECE = "#D89000",
+  GOOSE = "#A3A500",
+  KIT = "#39B600",
+  LOT = "#00BF7D",
+  NURSE = "#00BFC4",
+  START = "#00B0F6",
+  STRUT = "#F8766D",
+  THOUGHT = "#E76BF3",
+  TRAP = "#FF62BC"
+)
+```
+
+values for a permuted version of the data set. As explained in
+`interval_representation.Rmd` this permuted version of the data is useful as an
+example. The genuine permutation test generates _distributions_ of values by
+repeating the process multiple times rather than producing a _single example_ of
+a permuted dataset.
+
+
+``` {r data-load}
+qb_imputed <- read_rds(
+  here("processed_data", "intervals", "qb_imputed.rds")
+)
+
+perm_imputed <- read_rds(
+  here("processed_data", "intervals", "perm_imputed.rds")
+)
+```
+
+# PCA on formant data
+
+## Correlation matrices
+
+PCA can be understood in terms of structure in the correlation matrix of the
+variables under investigation.^[PCA carried out using the `prcomp` function, as
+in this analysis, applies singular value decomposition directly to the data
+matrix rather than using the correlation matrix directly. However, the
+underlying idea can still be understood via the correlation matrix.] In this
+section we calculate and visualise correlation matrices for our 60 second and
+240 second data, and compare them, in terms of number of correlations, to a
+permuted version of the data.
+
+Our visualisation will show pairwise correlations for each of the variables in
+our PCA analysis. In this case, there are 22 variables, the F1 and F2 of each of
+our vowel types. In the resulting visualisation of the correlation matrix, the
+lower diagonal will consist of pairwise scatter plots with loess smooths. The
+following function is used to in the generation of these plots.^[This function 
+was adapted from a [Stack Overflow
+answer](https://stackoverflow.com/questions/35085261/how-to-use-loess-method-in-ggallyggpairs-using-wrap-function).
+]
+``` {r}
+scatter_smooth <- function(data, mapping, method="loess", ...) {
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point(size = 0.5) + 
+      geom_smooth(method=method, size = 0.5, se = FALSE, span = 1, ...)
+      p
+}
+```
+
+We also define a function to reshape our data into the appropriate form. We
+want a row for each distinct interval in the dataset (each "speaker interval"),
+and two columns for each vowel, with one each for the first and second 
+formant. Note that this function includes provision (the `include_amplitude`
+argument) for a subsequent analysis in which amplitude will also be included as 
+a variable.
+
+``` {r}
+reshape_for_pca <- function(in_df, include_amplitude = FALSE) {
+  
+  if (include_amplitude == FALSE) {
+    desired_variables <- c(
+      "speaker_interval", "vowel_formant", "mean_int"
+    )
+  } else {
+    desired_variables <- c(
+      "speaker_interval", "vowel_formant", "amp_int", "mean_int"
+    )
+  }
+  
+  out_df <- in_df %>%
+    ungroup() %>%
+    mutate(
+      vowel_formant = str_c(Vowel, "_", formant_type),
+      speaker_interval = str_c(Speaker, "_", interval)
+    ) %>%
+    select(all_of(desired_variables)) %>%
+    pivot_wider(
+      names_from = vowel_formant,
+      values_from = mean_int
+    ) %>%
+    unnest(cols = everything())
+}
+```
+
+Finally, we define a function to generate correlation plots. The function
+takes the dataframe generated by the imputation step, the desired interval
+length, the desired title for the plot, and whether or not to include the 
+amplitude variable as arguments.
+``` {r}
+generate_correlation_plot <- function(
+    df, desired_interval_length, plot_title, include_amplitude = FALSE
+  ) {
+
+  data_matrix <- df %>%
+    filter(
+      interval_length == desired_interval_length
+    ) %>%
+    reshape_for_pca(include_amplitude = include_amplitude) %>%
+    select(-speaker_interval)
+
+  correlation_plot <- ggpairs(
+     data_matrix,
+     title = glue("{plot_title}"),
+     lower = list(continuous = scatter_smooth, combo = "box_no_facet"),
+     upper = list(continuous = wrap("cor", method = "spearman", size = 3))
+    ) +
+    theme_grey(base_size = 5) +
+    theme(plot.title = element_text(size=12))
+}
+```
+
+### 60 second intervals
+
+We begin by generating a plot for the 60 second data.
+
+``` {r correlation-60, fig.dim=c(10,10), fig.cap = "Correlation matrix for 60 second intervals."}
+correlation_plot_r_60 <- generate_correlation_plot(
+  qb_imputed, 60, "Correlation matrix for 60 second intervals (original data)"
+)
+
+correlation_plot_r_60
+```
+
+Figure \@ref(fig:correlation-60) shows the Spearman correlations (that is, the
+rank transformed correlations) between variables both with numerical figures and
+with scatterplots. We also see the distribution of values for each vowel. <span
+style = "font-variant: small-caps;">nurse</span> and <span style =
+"font-variant: small-caps;">start</span> are particularly pointy, suggesting a
+lot of imputation of the mean value in these cases.
+
+Much of the structure of correlations in the data comes from relationships
+between the F1 and F2 of the same vowel. <span style = "font-variant:
+small-caps;">goose</span> F1 and F2 is a particularly clear instance of this:
+when <span style = "font-variant: small-caps;">goose</span> F2 is high, then
+<span style = "font-variant: small-caps;">goose</span> F1 tends to be low. This
+is not the sort of structure which we are interested in.
+
+We now calculate the number of correlations _across_ vowels which are taken to
+be statistically significant at the 0.05 level.^[The exact calculation of
+p-values for Spearman correlations relies on the absence of ties in the rank
+representation of the relevant variable. This is not true of this data. For
+instance, our imputation of 0 for multiple values of the same vowel means that
+we will not achieve a unique rank representation of the data. Nothing in this
+analysis turns on the exactitude of these correlation values, which will only be
+used in comparison with the results achieved for permuted versions of the same
+data.] The count of statistically significant correlations, not including the
+associations between F1 and F2 of the same vowel, is 50.^[As an aside, there is
+no obvious association between F1 and F2 for <span style = "font-variant:
+small-caps;">start</span> and <span style = "font-variant:
+small-caps;">strut</span>. Of the four correlation matrices calculated in this
+section, <span style = "font-variant: small-caps;">dress, fleece, goose,
+lot</span>, <span style = "font-variant: small-caps;">nurse</span>, and <span
+style = "font-variant: small-caps;">thought</span> have a statistically
+significant F1 and F2 association in all; <span style = "font-variant:
+small-caps;">kit</span> has a statistically significant association in three,
+and <span style = "font-variant: small-caps;">trap</span> has a statistically
+significant association in two.]
+
+For an indication that this is signal over and above randomness, we have a look
+at the correlations for our example permuted dataset.
+``` {r correlation-60-permuted, fig.dim=c(10,10), fig.cap = "Correlation matrix for 60 second intervals (permuted)."}
+correlation_plot_p_60 <- generate_correlation_plot(
+  perm_imputed, 60, "Correlation matrix for 60 second intervals (permuted data)"
+)
+
+correlation_plot_p_60
+```
+Figure \@ref(fig:correlation-60-permuted) is the correlation matrix for the 60
+second permuted data. There are 10 statistically significant correlations for
+the permuted data. Again, this count excludes the relationship between F1 and F2
+of the same vowel. This suggest that we are picking up structure due to the
+covariation of vowels across our monologues. We will make this judgement more rigorous with an additional permutation test below.
+
+### 240 second intervals
+
+We now perform the same analysis for the 240 second intervals.
+``` {r correlation-240,  fig.dim=c(10,10), fig.cap = "Correlation matrix for 240 second intervals."}
+correlation_plot_r_240 <- generate_correlation_plot(
+  qb_imputed, 240, "Correlation matrix for 240 second intervals (original data)"
+)
+
+correlation_plot_r_240
+```
+
+Figure \@ref(fig:correlation-240) shows 48 statistically significant
+associations between vowels in our original 240 second intervals.
+
+``` {r correlation-240-permuted,  fig.dim=c(10,10), fig.cap = "Correlation matrix for 240 second intervals (permuted)."}
+correlation_plot_p_240 <- generate_correlation_plot(
+  perm_imputed, 240, "Correlation matrix for 240 second intervals (permuted data)"
+)
+
+correlation_plot_p_240
+```
+
+Figure \@ref(fig:correlation-240-permuted) shows 18 statistically significant
+associations between vowels in our permuted 240 second intervals. **NB:** the
+extreme looking values for <span style="font-variant: small-caps;">dress</span>
+have been checked. They are interval means of around -1.2 for both F1 and F2. 
+This is not outside of plausible range for a mean value.
+
+**CHECK THIS AGAIN.**
+A manual inspection of the charts for agreement in which variables are
+associated in the 240 second and 60 second data shows that, for both, the
+majority are shared. There are 20 associations which are present in both. That
+is 57% of the associations picked out in the 60 second data are also picked out
+in the 240 second data and, 55%, going the other way. With the exception of the
+<span style = "font-variant: small-caps;">trap</span> F2 - <span style =
+"font-variant: small-caps;">fleece</span> F2 association, all of these are
+associations between F1s.
+
+Finally, it is worth noting that these relationships are _subtle_. The
+correlations are _close to zero_ in every case. However, we have good reason to
+think that they are real associations. Particularly once we have carried out
+our PCA analysis and the associated permutation test below.
+
+Overall, this suggests that there is structure in the original data which is not
+present in the permuted data. The fact that similar structure appears at both
+interval sizes suggests that it is not an artefact of our imputation process.
+Recall that the 240 second intervals are significantly less affected by
+imputation than our 60 second intervals.
+
+### Permutation test results
+
+Our primary test of the meaningfulness of the PCA analysis is through
+permutation. A script to run our permutation tests is given in
+`scripts/permutation_tests.R` in the code repository of this project.
+The script reuses the functions defined in this
+and the `interval_representation.Rmd` worksheet to reapply the PCA analysis
+carried out up to now on a series of permuted versions of the dataset.
+
+As discussed in `interval_representation.Rmd` the permutation takes each
+speaker, extracts all of the `time_unscaled` values and randomly reassigns them
+to the speakers tokens. That is, it randomly reassigns a speaker's vowel onset
+times to their vowels. Crucially, this method maintains the link between F1 and
+F2 for some of our vowels in our randomised data. As this is structure which can
+be picked out by PCA, it is important that it remains in any random dataset we
+compare our results to.
+
+By repeating the analysis on multiple permuted versions of our data we gain an
+understanding of the _range_ of possible values which we would expect in the
+absence of any actual within-monologue structure. This avoids us having to
+figure out complicated probability distributions or how the structure which is
+present in the data, but is not of interest to us, can be disentangled from the
+structure we _are_ interested in.
+
+The script runs the analysis for 1000 permutations of the data.^[This can be
+modified, if necessary, by changing the initial parameters in the
+above-mentioned script.] The repetition is carried out using a simple `for`
+loop. This is not computationally efficient, but it does display the underlying
+logic in a simple form. In practice, we left the permutation test script to run
+over night, as it takes many hours to complete.
+
+To see that there is a greater degree of structure in this correlation matrix
+than would be expected in the absence of covariation between vowels within
+speaker monologues, we collect the number of significant correlations in the
+correlation matrix for each permuted dataset. We can load these and display them
+along with the count of significant correlations in the non permuted data.
+
+First, we define a function to return the p-values for all the pairwise
+correlations in a matrix.^[This function was lightly modified from a [Stack
+Overflow
+answer](https://stackoverflow.com/questions/13112238/a-matrix-version-of-cor-test).]
+``` {r correlation-permutation}
+cor.test.p <- function(x){
+  FUN <- function(x, y) cor.test(x, y, method="spearman", exact=FALSE)[["p.value"]]
+  z <- outer(
+    colnames(x), 
+    colnames(x), 
+    Vectorize(function(i,j) FUN(x[,i], x[,j]))
+  )
+  dimnames(z) <- list(colnames(x), colnames(x))
+  z
+}
+```
+
+In order to compare the counts from the permuted data with those in the original
+data, we also apply the function to the original data. These
+counts are higher than those quoted in the discussion above because they include
+F1 and F2 correlations within a single vowel and they double count off-diagonal
+correlations (because the matrix is symmetric).
+
+``` {r}
+qb_sig_counts <- qb_imputed %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    sig_matrix = map(data, ~ .x %>% 
+                      reshape_for_pca() %>%
+                      select(-speaker_interval) %>%
+                      as.matrix() %>%
+                      cor.test.p()
+    ),
+    sig_count = map_int(sig_matrix, ~ length(.x[.x < 0.05]))
+  ) %>%
+  select(interval_length, sig_count) %>%
+  ungroup() %>%
+  mutate(
+    # Steps for plotting
+    interval_length = as.factor(interval_length),
+    data_source = "Original"
+  )
+
+print(qb_sig_counts)
+```
+
+We will now load the permuted results and plot them together with the results
+from the original data.
+``` {r permutation-correlation-process}
+sig_cors_60 <- read_rds(here('processed_data', 'sig_cors_60.rds'))
+sig_cors_240 <- read_rds(here('processed_data', 'sig_cors_240.rds'))
+
+correlation_data <- tibble(
+    permutation = seq(1, 1000), 
+    sixty = sig_cors_60, 
+    two_fourty = sig_cors_240
+  ) %>%
+  pivot_longer(
+    cols = c('sixty', 'two_fourty'),
+    names_to = "interval_length",
+    values_to = "sig_count"
+  ) %>%
+  mutate(
+    interval_length = if_else(interval_length == 'sixty', 60, 240),
+    # Following two steps are for plotting
+    interval_length = as.factor(interval_length),
+    data_source = "Permuted"
+  )
+```
+
+``` {r permutation-correlation-plot, fig.cap = "Count of significant correlations in permuted and original data."}
+correlation_data %>% 
+  ggplot(
+    aes(
+      x = interval_length,
+      y = sig_count,
+      colour = data_source
+    )
+  ) +
+  geom_point(
+    data = qb_sig_counts,
+  ) +
+  geom_violin(
+    draw_quantiles = c(0.25, 0.5, 0.75),
+    #alpha = 0.7,
+    show.legend = FALSE
+  ) +
+  geom_jitter(alpha = 0.1) +
+  labs(
+    title = "Count of significant correlations in permuted and original data",
+    x = "Interval length (seconds)",
+    y = "Significant correlations (Spearman rho < 0.05)",
+    colour = "Data type"
+  )
+
+```
+
+Figure \@ref(fig:permutation-correlation-plot) shows the distribution of counts
+of significant Spearman correlations. We see that the counts for the original
+data (in red) are higher than the counts for any of our 1000 permuted versions
+of the data (in blue). Visually, the division from the permuted data is much
+more prominent for the 60 second intervals. But in both cases, we can be
+confident from this that the structure of our correlation matrix is
+over-and-above what we would expect from chance.
+
+One reason that the 240 second data tends to have higher numbers of significant
+correlations is that the 240s intervals represent a very large proportion of the
+data for some speakers. Given this, the permutation is likely to have less 
+of an effect on the mean value within 240 second intervals than it does for the 
+60 second intervals.
+
+## PCA Analysis
+
+### Defining and applying a PCA pipeline
+
+Once the data is reshaped for PCA, we apply a [rank transformation](https://pca4ds.github.io/analysis-of-table-of-ranks.html). 
+Standard PCA is linear, but the rank transformation allows for non-linear, but
+monotone, relationships to be detected. That is, we simply want to 
+know if the variables go up or down with one another, we are not interested
+in whether the relationship can be captured by a straight line. In technical
+terms, this is to replace the use of Pearson correlation with Spearman
+correlation.
+
+We define a function for this transformation.
+``` {r}
+rank_transform <- function(in_df, ties_method = "average") {
+  out_df <- in_df %>%
+    transmute(
+      across(.cols = everything(), .fns = ~ (rank(.x, ties.method=ties_method))) 
+    )
+}
+```
+
+Here we use the "average" ties method, which replaces tied entries in the 
+column with their mean rank.
+
+We incorporate the rank function into our PCA pipeline.
+``` {r}
+whole_corpus_pca <- function(in_df) {
+  out_pca <- in_df %>%
+    select(-speaker_interval) %>% # Removes speaker interval so we just get formants.
+    rank_transform() %>%
+    prcomp(scale=TRUE)
+}
+```
+Note that we set `scale=TRUE`, in line with the recommendations in the
+documentation for `prcomp`. 
+
+We now apply the `whole_corpus_pca` function separately to our 60 and 240 second
+intervals.
+``` {r}
+qb_pca <- qb_imputed %>%
+  # Renaming and mutating vars for readable plot for paper
+  rename(
+    amplitude = amp_int
+  ) %>%
+  mutate(
+    formant_type = str_replace(formant_type, "_50", "")
+  ) %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    reshaped_data = map(data, reshape_for_pca),
+    pca_object = map(reshaped_data, whole_corpus_pca)
+  ) %>%
+  select(interval_length, reshaped_data, pca_object)
+```
+
+### Scree and variable plots
+
+We first look at the scree plots for the 60 and 240 second data.
+``` {r scree-plots, fig.dim=c(7,14), fig.cap="Scree plots for original formant data (60s and 240s intervals)."}
+# Charts are combined using the patchwork library.
+fviz_eig(qb_pca %>% 
+           filter(interval_length == "60") %>% 
+           pull(pca_object) %>%
+           pluck(1), 
+         main = "60s intervals"
+  ) /
+  fviz_eig(qb_pca %>% 
+             filter(interval_length == "240") %>% 
+             pull(pca_object) %>%
+             pluck(1), 
+           main = "240s intervals"
+  ) + 
+  plot_annotation(
+    title = "Scree plots for PCA analysis of original formant data."  
+  )
+```
+Figure \@ref(fig:scree-plots) suggests some interest in the first Principal
+Component in the 240 second interval representation of the data, while the 60
+second data has two pairs of initial PCs which stick out (1-2 and 3-4). As with
+the correlation matrices, we will use a permutation test to determine the levels
+of variance we would expect to find explained by our PCs in the absence of the
+structure carried by the time variable and whether the variance explained in the
+initial PCs depicted in Figure \@ref(fig:scree-plots) can be explained by
+chance.
+
+This point in a PCA analysis is typically where the "elbow rule" is applied to
+select a number of PCs to keep to define a new, lower-dimensional,
+representation of the data. This rule picks out the PCs for which the difference
+in variance explained is steep from those for which it is not. For the 240
+second data, the elbow rule would suggest we pick the first PC. The 60 second
+interval scree plot would allow for either two or four PCs to be selected.
+
+However, our aim here is not to define a new space, but to pick out patterns of
+covariation in the data. For this, any PC to interpret provided it does not 
+explain less variance than random data.
+
+We now generate variable plots of the first two PCs. 
+
+``` {r}
+pca_60_plot <- fviz_pca_var(qb_pca %>% 
+     filter(interval_length == "60") %>% 
+     pull(pca_object) %>%
+     pluck(1), 
+  col.var = "contrib", # Color by contributions to the PC
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE,     # Avoid text overlapping,
+  title = "60s intervals"
+  ) +
+  labs(x = "PC1", y = "PC2")
+
+
+pca_240_plot <- fviz_pca_var(
+    qb_pca %>% 
+      filter(interval_length == "240") %>% 
+      pull(pca_object) %>%
+      pluck(1),
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,    # Avoid text overlapping
+    title = "240s intervals"
+  ) +
+  labs(x = "PC1", y = "PC2")
+
+```
+
+``` {r variable-plots, fig.dim=c(7,14), fig.cap="Variable plots for original formant data (60s and 240s intervals)."}
+var_plots <- pca_60_plot /
+  pca_240_plot +
+  plot_annotation(
+    title = "Variable plots for PCA analysis of original formant data."  
+  )
+
+var_plots
+ggsave(here('plots', 'var_plots.png'), units = "px", width = 2000, height = 4000)
+```
+
+Variable plots are a way to visualise the association between the variables in
+our data set and the principal components generated by PCA. The $x$-axis
+(`Dim1`) in  Figure \@ref(fig:variable-plots) represents the first principal
+component, while the $y$-axis (`Dim2`) represents the second principal
+component. The arrows then indicate the relative movement of the original
+variables as we move around in 'PC' space. Here the space is defined by the
+first two PCs. For instance, If an arrow runs along the $x$-axis, with its head
+at a positive value of $x$, this indicates that rows with a high score on PC1
+will tend to have high values of the relevant variable. If the arrow head is at
+a negative value, then a high PC1 score will tend to come along with low values
+of the variable.
+
+The variable plots in Figure \@ref(fig:variable-plots) are both visually
+dominated by one of the strong pairwise correlations visible in our correlation
+matrices: the correlation of <span style = "font-variant:
+small-caps;">goose</span> F1 and F2. This dominates PC1 of the 60 second
+interval plot and PC2 of the 240 second interval plot. We see <span style =
+"font-variant: small-caps;">thought</span> F1 and F2 associated with <span style
+= "font-variant: small-caps;">goose</span> F1 in the 240 second intervals (on
+PC2) and with <span style = "font-variant: small-caps;">goose</span> F2 with the
+60 second intervals (on PC2). This may be because of the increased salience of
+the relationship between F1s which seems to appear in the first PC of the 240
+second intervals.
+
+The phenomenon we take to be most strongly brought out by these variable plots
+is the association of F1's with one another. This is particularly clear in the
+variable plot for the 240 second intervals. All of the F1s are patterned
+together by PC1 for the 240 second intervals. We see, in particular, <span style
+= "font-variant: small-caps;">dress, fleece, trap, lot, nurse, goose,
+thought,</span> and <span style = "font-variant: small-caps;">strut</span> with
+similarly strong positive loadings on PC1.
+
+This pattern is less strong for the 60 second intervals. The clustering of F1's
+is stronger for PC2 than for PC1, but we seem to see the F1's patterning
+together with negative PC2 scores and positive PC1 scores. Note also, that 
+<span style = "font-variant: small-caps;">goose</span>
+F1 has been detached from the other F1s. However, a negative PC2 score does seem
+to indicate a low PC2 score does seem to indicate high F1s for all monopthongs
+but <span style = "font-variant: small-caps;">goose</span>.
+
+## Permutation test results
+
+To ensure the significance of the patterns uncovered in these PCA analyses,
+We return to the results of our permutation test. This time we load the scree
+plot variances explained for the first five PCs for each permuted data set and
+plot them with the variances explained in the first five PCs from the original
+data.
+
+The equation to return the variances explained with the results of `prcomp` is
+to take the `sdev` object, which represents standard deviations of the PCs, 
+we return them to the variance scale by squaring them (this gives the eigenvalues
+of the correlation matrix), and divide this by the sum of the variances for each 
+PC.
+
+``` {r permutation-scree-process}
+# Original data variances explained
+qb_variances_explained <- qb_pca %>%
+  mutate(
+    variances_explained = map(pca_object, ~ (.x$sdev^2 / sum(.x$sdev^2))[1:5])
+  ) %>%
+  select(interval_length, variances_explained) %>%
+  unnest_wider(
+    col = variances_explained
+  ) %>%
+  rename(
+    PC1 = ...1,
+    PC2 = ...2,
+    PC3 = ...3,
+    PC4 = ...4,
+    PC5 = ...5
+  ) %>%
+  mutate(
+    permutation = 0
+  )
+
+variances_explained_60 <- read_rds(here('processed_data', 'variances_explained_60.rds'))
+variances_explained_240 <- read_rds(here('processed_data', 'variances_explained_240.rds'))
+
+variances_explained <- bind_rows(
+    "60" = variances_explained_60 %>% mutate(permutation = seq(1,1000)),
+    "240" = variances_explained_240 %>% mutate(permutation = seq(1,1000)),
+    .id = "interval_length"
+  ) %>%
+  mutate(
+    interval_length = as.numeric(interval_length)
+  )
+
+variances_explained <- bind_rows(
+  "Permuted" = variances_explained,
+  "Original" = qb_variances_explained,
+  .id = "data_source"
+)
+```
+
+``` {r permutation-scree-plot, fig.cap="Variances explained by PCA on original and permuted data."}
+plot_data <- variances_explained %>%
+  mutate(
+    interval_length = as.factor(interval_length)
+  ) %>%
+  pivot_longer(
+    cols = contains("PC"),
+    names_to = "PC",
+    values_to = "variance_explained"
+  ) %>%
+  mutate(
+    transparency = if_else(permutation != 0, "Transparent", "Opaque"), # To control transparency.
+    variance_explained = variance_explained * 100 # Convert to percentages.
+  ) 
+
+plot_data %>%
+  ggplot(
+    aes(
+      x = PC,
+      y = variance_explained,
+      colour = data_source,
+      group = permutation,
+      alpha = transparency
+    )
+  ) +
+  geom_line() +
+  # The following line is slightly messy. 
+  # It draws on the original data line again.
+  # This way of doing it, means the legend is dealt with by
+  # the previous geom_line() call.
+  geom_line(data = plot_data %>% filter(data_source == "Original")) +
+  scale_alpha_manual(
+    values = c(
+      "Opaque" = 1,
+      "Transparent" = 0.2
+    )
+  ) +
+  facet_grid(cols = vars(interval_length)) +
+  labs(
+    title = "Variances explained by PCA on original and permuted data",
+    x = "Principal component",
+    y = "Variance explained (%)",
+    colour = "Data type"
+  ) + 
+  guides(alpha = "none")
+```
+
+Figure \@ref(fig:permutation-scree-plot) shows that we have some PCs in the
+original data which explain more than is achieved by PCA on permuted data.
+For the 60 second PCA, we see that the first, second, and third PCs achieves 
+explain more variance than the corresponding PCs in the permuted data. 
+For the
+240 second intervals, the first PC accounts for a much higher amount of variance
+than the first PC for our permuted data, but the remaining PCs explain the same
+amount of variance as in our permuted data.
+
+The PCs identified as interesting in terms of their relation to the F1's of
+each vowel all stick out above the distribution of permuted PCA
+results in Figure \@ref(fig:permutation-scree-plot). This very strongly suggests
+that we are dealing we are real feature of our monologue dataset.
+
+As an aside, it's worth quickly looking at PC3 for the 60 second intervals, 
+given that it explains more variance than expected by change. We plot it with
+another variable plot as follows:
+``` {r}
+ fviz_pca_var(qb_pca %>% 
+     filter(interval_length == "60") %>% 
+     pull(pca_object) %>%
+     pluck(1), 
+  col.var = "contrib", # Color by contributions to the PC
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE,     # Avoid text overlapping,
+  title = "60s intervals",
+  axes = c(2,3)
+  ) +
+  labs(x = "PC2", y = "PC3")
+```
+Here PC3 (the $y$ axis) seems to be primarily capturing <span style="font-variant: small-caps;">fleece</span>
+F2 and it's relationship with <span style="font-variant: small-caps;">thought</span> F1 and F2, and
+<span style="font-variant: small-caps;">fleece</span> F1. It also seems to capture
+correlations between a subset of F1 values (visible in the top left quadrant). 
+Informally speaking, the 60 second PCs are much more dominated by pairwise
+correlations between the F1 and F2 of the same vowel. This is true in
+permuted data as well (our permutation process maintains the connection 
+between F1 and F2 of each vowel). So, for instance, it is clear from the
+top panel of Figure \@ref(fig:variable-plots) that the relationship between
+<span style="font-variant: small-caps;">goose</span> F1 and F2 is the primary 
+thing that we are tracking with PC1 and PC2. What we don't tend to see in
+the permuted data is the clustering of the F1's together with moderate loadings.
+However, the connection between <span style="font-variant: small-caps;">fleece</span>
+and <span style="font-variant: small-caps;">thought</span> in PC3 _is_ an
+across vowel relationship. The picture here, where both vowels move closer to
+the centre of the vowel space as PC3 decreases, is perhaps consistent with 
+contraction and expansion of the vowel space.
+
+# PCA on speaker-balanced corpus
+
+The `interval_representation.Rmd` workbook shows the variation in the amount
+of data provided by different speakers. One might worry that the phenomena
+present in the PCA analysis on these data are determined by the speakers who
+contribute the most. In order to investigate whether this is the case, we
+rerun the analysis on a balanced sample of intervals.
+
+For the 240s intervals, we sample two intervals from each speaker with two
+intervals or more. We do the same for the 60s intervals but with five intervals
+from each speaker with five intervals or more.
+``` {r balanced_sample}
+sample_intervals <- function(df, sample_size) {
+  speaker_intervals <- df %>% pull(interval) %>% unique()
+  sampled_intervals <- sample(
+    speaker_intervals,
+    size = sample_size,
+    replace = FALSE
+  )
+}
+
+generate_balanced_corpus <- function(df, sample_size) {
+  out_df <- df %>%
+    group_by(Speaker) %>%
+    mutate(n_intervals = n_distinct(interval)) %>%
+    filter(n_intervals >= sample_size) %>%
+    nest() %>%
+    mutate(
+      in_sample = map(data, ~ sample_intervals(.x, sample_size))
+    ) %>%
+    unnest(cols=data) %>%
+    ungroup() %>%
+    mutate(
+      include = map2_lgl(interval, in_sample, ~ .x %in% .y)
+    ) %>%
+    filter(
+      include == TRUE
+    )
+}
+```
+
+Now apply PCA to the balanced data:
+``` {r balanced-pca}
+qb_balanced_pca <- qb_imputed %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    sample_size = if_else(interval_length == 60, 5, 2), # Set number to sample.
+    balanced_data = map2(data, sample_size, generate_balanced_corpus),
+    reshaped_data = map(balanced_data, reshape_for_pca),
+    pca_object = map(reshaped_data, whole_corpus_pca)
+  ) %>%
+  select(
+    interval_length, pca_object
+  )
+```
+
+We examine the variable plots to see if we have the same kind of results.
+``` {r balanced-variable-plots, fig.dim=c(7,14), fig.cap="Variable plots for balanced data (60s and 240s intervals)."}
+fviz_pca_var(
+  qb_balanced_pca %>%
+     filter(interval_length == "60") %>%
+     pull(pca_object) %>%
+     pluck(1),
+  col.var = "contrib", # Color by contributions to the PC
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE,     # Avoid text overlapping,
+  title = "60s intervals"
+  ) /
+  fviz_pca_var(
+    qb_balanced_pca %>%
+      filter(interval_length == "240") %>%
+      pull(pca_object) %>%
+      pluck(1),
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,    # Avoid text overlapping
+    title = "240s intervals"
+  ) +
+  plot_annotation(
+    title = "Variable plots for PCA analysis of balanced formant data."
+  )
+```
+
+The top panel of Figure \@ref(fig:balanced-variable-plots) (for the 60s
+intervals) has all F1s but <span style = "font-variant:
+small-caps;">goose</span> patterned together on PC1. The same is true for the
+240 second interval data. Note that the sign is arbitrary in PC loadings. The
+fact that the F1s are loaded negatively on PC1 in the balanced data and
+positively on the original data is not meaningful. The results for both interval
+lengths are thus in line with our original analysis on the larger, unbalanced,
+data set.
+
+# PCA with amplitude
+
+***This section contains the PCA analysis reported in Section 3 of the paper.***
+
+As set out in the main paper, there is a literature on the Lombard effect, an
+involuntary process whereby speakers in loud environments increase their vocal
+effort. This has been shown to have an across the board effect on F1 values.
+Given that the effect uncovered by our PCA analysis is on F1 values we
+turned to vocal effort, with amplitude as a proxy, to explain what is going on.
+
+We carry out modelling to investigate the role of amplitude in the
+`gamm_models.Rmd` worksheet. But the initial indication that we were on the 
+right track in looking to amplitude to explain comes by simply including amplitude as a
+variable. 
+
+## Correlation matrices
+
+We repeat the correlation matrix investigation.
+
+``` {r correlation-matrix-amp-60, fig.dim=c(10,10), fig.cap="Correlation matrix for both formant and amplitude data, 60 second intervals."}
+correlation_plot_r_60a <- generate_correlation_plot(
+  qb_imputed, 
+  desired_interval_length = 60, 
+  plot_title="Original data, 60 second intervals, with amplitude.", 
+  include_amplitude=TRUE
+)
+
+correlation_plot_r_60a
+```
+
+Figure \@ref(fig:correlation-matrix-amp-60) shows that, for the 60 second
+intervals, maximum amplitude is significantly correlated (Spearman rho < 0.05)
+with the first formant of each vowel. It is also significantly correlated with
+the F2 of 
+<span style = "font-variant: small-caps;">fleece, goose</span> and
+<span style = "font-variant: small-caps;">trap</span>.
+
+``` {r correlation-matrix-amp-240, fig.dim=c(10,10), fig.cap="Correlation matrix for both formant and amplitude data, 240 second intervals."}
+correlation_plot_r_240a <- generate_correlation_plot(
+  qb_imputed, 
+  desired_interval_length = 240, 
+  plot_title="Original data, 240 second intervals, with amplitude.", 
+  include_amplitude=TRUE
+)
+
+correlation_plot_r_240a
+```
+
+Figure \@ref(fig:correlation-matrix-amp-240) shows that, for the 240 second
+intervals, maximum amplitude is significantly correlated (Spearman rho < 0.05)
+with every F1. 
+It is also significantly correlated with the F2 of
+<span style = "font-variant: small-caps;">trap</span>.
+
+These correlation matrices are thus promising for an explanation of the F1
+effect in terms of amplitude.
+
+## Permutation test of significant correlations
+
+Since this is the main PCA we report in the paper, we perform the same
+permutation test as carried out above, adding amplitude as a variable. 
+This can be recreated by setting `INCLUDE_AMPLITUDE <- TRUE` in the script 
+at `scripts/permutation_tests.R`.
+
+``` {r}
+amp_sig_counts <- qb_imputed %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    sig_matrix = map(data, ~ .x %>% 
+                      reshape_for_pca(include_amplitude = TRUE) %>%
+                      select(-speaker_interval) %>%
+                      as.matrix() %>%
+                      cor.test.p()
+    ),
+    sig_count = map_dbl(sig_matrix, ~ length(.x[.x < 0.05]))
+  ) %>%
+  select(interval_length, sig_count) %>%
+  ungroup() %>%
+  mutate(
+    data_source = "Original", # Added for later plot labelling
+    interval_length = as.factor(interval_length)
+  )
+
+print(amp_sig_counts)
+```
+
+We will now load the permuted results and plot them together.
+``` {r permutation-correlation-process-amp}
+amp_sig_cors_60 <- read_rds(
+  here('processed_data', 'sig_cors_60_with_amplitude.rds')
+)
+amp_sig_cors_240 <- read_rds(
+  here('processed_data', 'sig_cors_240_with_amplitude.rds')
+)
+
+amp_correlation_data <- tibble(
+    permutation = seq(1, 1000), 
+    sixty = amp_sig_cors_60, 
+    two_fourty = amp_sig_cors_240
+  ) %>%
+  pivot_longer(
+    cols = c('sixty', 'two_fourty'),
+    names_to = "interval_length",
+    values_to = "sig_count"
+  ) %>%
+  mutate(
+    interval_length = if_else(interval_length == 'sixty', 60, 240), 
+    # Following two steps requires for plotting.
+    interval_length = as.factor(interval_length),
+    data_source = "Permuted"
+  )
+```
+
+``` {r permutation-correlation-plot-amp, fig.cap = "Count of significant correlations in permuted and original formant and amplitude data."}
+amp_correlation_data %>% 
+  ggplot(
+    aes(
+      x = interval_length,
+      y = sig_count,
+      colour = data_source
+    )
+  ) +
+  geom_point(
+    data = amp_sig_counts,
+  ) +
+  geom_violin(
+    draw_quantiles = c(0.25, 0.5, 0.75),
+    #alpha = 0.7,
+    show.legend = FALSE
+  ) +
+  geom_jitter(alpha = 0.1) +
+  labs(
+    title = "Count of significant correlations",
+    subtitle = "Permuted and original data, including amplitude.",
+    x = "Interval length (seconds)",
+    y = "Significant correlations (Spearman rho < 0.05)",
+    colour = "Data type"
+  )
+
+```
+
+Figure \@ref(fig:permutation-correlation-plot-amp) shows that the original data
+contains many more significant correlations (Spearman rho < 0.05) than the
+permuted data. Unlike the previous test of count of significant correlations 
+(Figure \@ref(fig:permutation-correlation-plot)), the distributions for 60 
+and 240 second intervals seem to sit around the same centre.
+
+## PCA analysis
+
+We now repeat the PCA analysis with amplitude included.
+
+``` {r}
+qb_amp_pca <- qb_imputed %>%
+  # Renaming and mutating vars for readable plot for paper
+  mutate(
+    formant_type = str_replace(formant_type, "_50", "")
+  ) %>%
+  group_by(interval_length) %>%
+  nest() %>%
+  mutate(
+    reshaped_data = map(data, ~ reshape_for_pca(.x, include_amplitude = TRUE)),
+    # Fixing "amplitude" label
+    reshaped_data = map(reshaped_data, ~ rename(.x, Amplitude = amp_int)),
+    pca_object = map(reshaped_data, whole_corpus_pca)
+  ) %>%
+  select(interval_length, reshaped_data, pca_object)
+```
+
+We start by examining the scree plots.
+``` {r scree-plots-amp, fig.dim=c(7,14), fig.cap="Scree plots for original amplitude and formant data (60s and 240s intervals)."}
+fviz_eig(qb_amp_pca %>% 
+           filter(interval_length == "60") %>% 
+           pull(pca_object) %>%
+           pluck(1), 
+         main = "60s intervals"
+  ) /
+  fviz_eig(qb_amp_pca %>% 
+             filter(interval_length == "240") %>% 
+             pull(pca_object) %>%
+             pluck(1), 
+           main = "240s intervals"
+  ) + 
+  plot_annotation(
+    title = "Scree plots for PCA analysis of original formant and amplitude data."  
+  )
+```
+
+Figure \@ref(fig:scree-plots-amp) shows, for the 60 second intervals, a more
+prominent PC1 than was present for the data without amplitude included (Figure
+\@ref(fig:scree-plots)). The structure of the 240 second intervals appears the
+same as for the data without amplitude included.
+
+We now look at the variable plots following the same steps as used above.
+
+``` {r}
+pca_60_plot <- fviz_pca_var(
+  qb_amp_pca %>% 
+     filter(interval_length == "60") %>% 
+     pull(pca_object) %>%
+     pluck(1), 
+  col.var = "contrib", # Color by contributions to the PC
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE,     # Avoid text overlapping,
+  title = "60s intervals"
+  ) +
+  labs(x = "PC1", y = "PC2")
+
+pca_240_plot <- fviz_pca_var(
+    qb_amp_pca %>% 
+      filter(interval_length == "240") %>% 
+      pull(pca_object) %>%
+      pluck(1),
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,    # Avoid text overlapping
+    title = "240s intervals"
+  ) +
+  labs(x = "PC1", y = "PC2")
+
+```
+
+
+The following is Figure 2 in the paper. Small changes have been made to the code
+to make the plot more suitable for publication.
+``` {r variable-plots-amp-2, fig.dim=c(7,14), fig.cap="Variable plots for original amplitude and formant data (60s and 240s intervals)."}
+(
+  fviz_pca_var(
+    qb_amp_pca %>% 
+       filter(interval_length == "60") %>% 
+       pull(pca_object) %>%
+       pluck(1), 
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping,
+    title = "60s intervals",
+    xlab = "PC1",
+    ylab = "PC2"
+  ) + 
+  labs(
+    colour = "Contribution"
+  ) +
+  scale_colour_scico(
+    limits = c(0, 20),
+    midpoint = 5,
+    palette="lajolla", 
+    na.value = NA
+  )
+) /
+  ( 
+    fviz_pca_var(
+      qb_amp_pca %>% 
+        filter(interval_length == "240") %>% 
+        pull(pca_object) %>%
+        pluck(1),
+      col.var = "contrib", # Color by contributions to the PC
+      gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+      repel = TRUE,    # Avoid text overlapping
+      title = "240s intervals",
+      xlab = "PC1",
+      ylab = "PC2"
+    ) +
+    labs(
+       colour = "Contribution"
+     ) +
+    scale_colour_scico(
+      limits = c(0, 20),
+      midpoint = 5,
+      palette="lajolla", 
+      na.value = NA
+    )
+  ) +
+  plot_layout(
+    guides = "collect"
+  ) +
+  plot_annotation(
+    title = "Variable plots for PCA analysis",
+  )
+```
+
+Figure \@ref(fig:variable-plots-amp-2) is interestingly different from Figure 
+\@ref(fig:variable-plots). In particular, we find that both interval sizes
+now have the F1 effect on PC1. Without including amplitude, the F1 effect was
+mostly loaded on to PC2 for the 60 second intervals. The 60 second intervals
+now have a PC2 which seems to track the pairwise correlation between <span style = "font-variant: small-caps;">goose</span> F1
+and <span style = "font-variant: small-caps;">goose</span> F2. The most important thing for our purposes, though, is that in 
+both interval sizes we see that amplitude is loaded with the F1s in both the
+60 and 240 second intervals. This is consistent with the idea that this pattern
+in the data is driven by amplitude.
+
+We again produce a variable plot for these as well
+(Figure \@ref(fig:pc3-4-plot)).
+
+``` {r pc3-4-plot, fig.cap="PC3 and PC4 variable plots for original amplitude and formant data (60s intervals)."}
+fviz_pca_var(
+  qb_amp_pca %>% 
+     filter(interval_length == "60") %>% 
+     pull(pca_object) %>%
+     pluck(1),
+  axes = c(3, 4),
+  col.var = "contrib", # Color by contributions to the PC
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE,     # Avoid text overlapping,
+  ) +
+  labs(
+    title = "PC3 and PC4, 60s Intervals",
+    x = "PC3",
+    y = "PC4"
+  )
+```
+And, again, Figure \@ref(fig:pc3-4-plot) shows that the PC3 and PC4 space is
+dominated by <span style = "font-variant: small-caps;">fleece</span> and <span
+style = "font-variant: small-caps;">thought</span>. Note also that amplitude is
+not associated with these PCs. There may be signal here which is of interest,
+but it is beyond the scope of the present paper. Perhaps, as suggested above, we
+are seeing something about expansion and reduction of vowel spaces in our third PC/.
+
+## Permutation test of scree plot.
+
+We now repeat the permutation test of our scree plot against permuted data.
+Again, we compare the distribution of variances explained obtained from
+1000 permuted versions of our data set with the variances explained by 
+PCA applied to our original data.
+
+``` {r permutation-scree-process-amp}
+# Original data variances explained
+qb_amp_variances_explained <- qb_amp_pca %>%
+  mutate(
+    variances_explained = map(pca_object, ~ (.x$sdev^2 / sum(.x$sdev^2))[1:5])
+  ) %>%
+  select(interval_length, variances_explained) %>%
+  unnest_wider(
+    col = variances_explained
+  ) %>%
+  rename(
+    PC1 = ...1,
+    PC2 = ...2,
+    PC3 = ...3,
+    PC4 = ...4,
+    PC5 = ...5
+  ) %>%
+  mutate(
+    permutation = 0
+  )
+
+amp_variances_explained_60 <- read_rds(
+  here('processed_data', 'variances_explained_60_with_amplitude.rds'))
+amp_variances_explained_240 <- read_rds(
+  here('processed_data', 'variances_explained_240_with_amplitude.rds'))
+
+amp_variances_explained <- bind_rows(
+    "60" = amp_variances_explained_60 %>% mutate(permutation = seq(1,1000)),
+    "240" = amp_variances_explained_240 %>% mutate(permutation = seq(1,1000)),
+    .id = "interval_length"
+  ) %>%
+  mutate(
+    interval_length = as.numeric(interval_length)
+  )
+
+amp_variances_explained <- bind_rows(
+  "Permuted" = amp_variances_explained,
+  "Original" = qb_amp_variances_explained,
+  .id = "data_source"
+)
+```
+
+``` {r permutation-scree-plot-amp, fig.cap="Variances explained by PCA on original and permuted formant and amplitude data."}
+plot_data <- amp_variances_explained %>%
+  mutate(
+    interval_length = as.factor(interval_length)
+  ) %>%
+  pivot_longer(
+    cols = contains("PC"),
+    names_to = "PC",
+    values_to = "variance_explained"
+  ) %>%
+  mutate(
+    transparency = if_else(permutation != 0, "Transparent", "Opaque"), # To control transparency.
+    variance_explained = variance_explained * 100 # Convert to percentages.
+  ) 
+
+plot_data %>%
+  ggplot(
+    aes(
+      x = PC,
+      y = variance_explained,
+      colour = data_source,
+      group = permutation,
+      alpha = transparency
+    )
+  ) +
+  geom_line() +
+  # The following line is slightly messy. 
+  # It draws on the original data line again.
+  # This way of doing it, means the legend is dealt with by
+  # the previous geom_line() call.
+  geom_line(data = plot_data %>% filter(data_source == "Original")) +
+  scale_alpha_manual(
+    values = c(
+      "Opaque" = 1,
+      "Transparent" = 0.2
+    )
+  ) +
+  facet_grid(cols = vars(interval_length)) +
+  labs(
+    title = "Variances explained by PCA",
+    subtitle = "Original and permuted data containing amplitude",
+    x = "Principal component",
+    y = "Variance explained (%)",
+    colour = "Data type"
+  ) + 
+  guides(alpha = "none")
+```
+
+Figure \@ref(fig:permutation-scree-plot-amp) shows an even more obvious
+difference between the original and permuted data. In the 60 second intervals
+PC1 and PC2 clearly explain more variance than any of the 1000 permuted data
+sets. PC3 also explains more variance than any of the permuted data sets. Here
+it is important to remember that adding amplitude switches the PC effect from
+being primarily loaded on PC2 to being loaded on PC1. The 240 second interval
+results follow the same pattern as in \@ref(fig:permutation-scree-plot), but
+with a larger gap between the permuted and original data on PC1.
+
+## Relationship between initial PCA and PCA with amplitude
+
+We might wonder how closely PC scores from our initial PCA and those from our
+our PCA with amplitude align with one another. We first compare PC1 of the
+240s intervals for the analysis with amplitude and the analysis without.
+
+``` {r}
+collect_scores <- function(reshaped, pca_object) {
+  out_df <- reshaped %>%
+    mutate(
+      PC1_score = pca_object$x[,1],
+      PC2_score = pca_object$x[,2]
+    )
+}
+```
+
+``` {r}
+PC1_scores_original <- qb_pca %>%
+  mutate(
+    intervals_and_scores = map2(reshaped_data, pca_object, collect_scores)
+  ) %>%
+  select(interval_length, intervals_and_scores) %>%
+  unnest(cols=intervals_and_scores) %>%
+  ungroup() %>%
+  filter(
+    interval_length == "240"
+  ) %>%
+  select(speaker_interval, PC1_score)
+
+PC1_scores_with_amplitude <- qb_amp_pca %>%
+  mutate(
+    intervals_and_scores = map2(reshaped_data, pca_object, collect_scores)
+  ) %>%
+  select(interval_length, intervals_and_scores) %>%
+  unnest(cols=intervals_and_scores) %>%
+  ungroup() %>%
+  filter(
+    interval_length == "240"
+  ) %>%
+  select(speaker_interval, PC1_score)
+
+PC1_scores <- PC1_scores_original %>%
+  rename(
+    original_PCA = PC1_score
+  ) %>%
+  left_join(
+    PC1_scores_with_amplitude %>%
+      rename(
+        amplitude_PCA = PC1_score
+      )
+  )
+```
+
+The first question is simply: how closely are the PC scores in the original
+PCA analysis and the scores in the analysis with amplitude correlated?
+``` {r}
+cor(PC1_scores$original_PCA, PC1_scores$amplitude_PCA)
+```
+The answer is similarly simple: they are very closely correlated, with a Pearson
+correlation coefficient of 0.97.
+
+For good measure, we plot them together:
+``` {r PCA-relationship, fig.cap="Relationship between PC1 in original and amplitude-included PCA (240s intervals)."}
+PC1_scores %>%
+  ggplot(
+    aes(
+      x = original_PCA,
+      y = amplitude_PCA
+    )
+  ) +
+  geom_point() +
+  geom_smooth() +
+  labs(
+    title = "Relationship between PC1 (original) and PC1 (with amplitude).",
+    subtitle = "240 second intervals.",
+    x = "PC1 (Original PCA)",
+    y = "PC1 (Amplitude PCA)"
+  )
+```
+
+The same level of correlation will not be possible with the 60 second intervals,
+where the amplitude relationship is partially carried by both PC1 and PC2.
+
+The following code checks this.
+``` {r}
+PC2_scores_original <- qb_pca %>%
+  mutate(
+    intervals_and_scores = map2(reshaped_data, pca_object, collect_scores)
+  ) %>%
+  select(interval_length, intervals_and_scores) %>%
+  unnest(cols=intervals_and_scores) %>%
+  ungroup() %>%
+  filter(
+    interval_length == "60"
+  ) %>%
+  select(speaker_interval, PC2_score)
+
+PC1_scores_with_amplitude <- qb_amp_pca %>%
+  mutate(
+    intervals_and_scores = map2(reshaped_data, pca_object, collect_scores)
+  ) %>%
+  select(interval_length, intervals_and_scores) %>%
+  unnest(cols=intervals_and_scores) %>%
+  ungroup() %>%
+  filter(
+    interval_length == "60"
+  ) %>%
+  select(speaker_interval, PC1_score)
+
+PCA_60_scores <- PC2_scores_original %>%
+  rename(
+    original_PCA = PC2_score
+  ) %>%
+  left_join(
+    PC1_scores_with_amplitude %>%
+      rename(
+        amplitude_PCA = PC1_score
+      )
+  )
+```
+
+Their correlation is evaluated by the following block.
+``` {r}
+cor(PCA_60_scores$original_PCA, PCA_60_scores$amplitude_PCA)
+```
+
+This is a far less strong correlation, but it is a relationship nonetheless. PC2
+in the original PCA had the F1s negatively loaded, whereas the PCA with
+amplitude positively loaded them on to PC1. Given this, a negative correlation
+is what we would expect.
+
+``` {r PCA-relationship-2, fig.cap="Relationship between PC2 in original and PC1 in amplitude-included PCA (60s intervals)."}
+PCA_60_scores %>%
+  ggplot(
+    aes(
+      x = original_PCA,
+      y = amplitude_PCA
+    )
+  ) +
+  geom_point() +
+  geom_smooth() +
+  labs(
+    title = "Relationship between PC2 (original) and PC1 (with amplitude).",
+    subtitle = "60 second intervals.",
+    x = "PC2 (Original PCA)",
+    y = "PC1 (Amplitude PCA)"
+  )
+```
+
+# From PC scores to original data
+
+**This section contains work towards the Shiny interactive for exploring**
+**speaker vowel spaces.**
+
+When doing PCA, it is important, especially when carrying out transformations on
+the original data, to determine the meaning of variation in PC scores for real
+vowel spaces.
+
+## Extracting vowel spaces and PC scores
+
+First, we extract the PC scores corresponding to each interval.
+``` {r}
+qb_intervals_and_scores <- qb_amp_pca %>%
+  mutate(
+    intervals_and_scores = map2(reshaped_data, pca_object, collect_scores)
+  ) %>%
+  select(interval_length, intervals_and_scores) %>%
+  unnest(cols=intervals_and_scores)
+```
+
+We then generate vowel spaces from the raw data. We will want to explore the 
+effects of normalisation methods on the data. We apply the Lobanov 2.0
+normalisation, which is a modification of the Lobanov normalisation designed to
+take into account differences in counts of vowel types within natural speech
+corpora (Brand et al. 2021, with more detail in the supplementary material
+[here](https://nzilbb.github.io/Covariation_monophthongs_NZE/Covariation_monophthongs_analysis.html#Normalisation)). The following code loads the original data
+as `qb_vowels` and adds a column named `lob2` containing the Lobanov 2.0 
+normalisation for each vowel.
+``` {r}
+qb_vowels <- read_rds(
+    here('processed_data', 'Quakebox_filtered.rds')
+  ) %>%
+  filter(
+    Vowel != "FOOT" # Remove FOOT
+  ) %>%
+  select(
+    Speaker, Vowel, F1_50, F2_50, intensity_max, Target.segments.start
+  ) %>%
+  rename(
+    time_unscaled = Target.segments.start,
+    amp = intensity_max
+  ) %>%
+  # scale amplitude by speaker
+  group_by(Speaker) %>%
+  mutate(
+    scaled_amp = scale(amp)[,1]
+  ) %>%
+  pivot_longer(
+    cols = contains("50"), # select formant columns
+    values_to = "formant_value",
+    names_to = "formant_type"
+  ) 
+ 
+add_lobanov <- function(in_df, by_interval = FALSE) {
+  
+  if (by_interval == TRUE) {
+    grouping_variables = c("Speaker", "interval", "formant_type")
+  } else {
+    grouping_variables = c("Speaker", "formant_type")
+  }
+  
+  mean_of_means <- in_df %>%
+    ungroup() %>%
+    group_by(across(all_of(c(grouping_variables, "Vowel")))) %>%
+    summarise(
+      mean_vowel = mean(formant_value)
+    ) %>%
+    ungroup() %>%
+    group_by(across(all_of(grouping_variables))) %>% 
+    mutate(
+      mean_of_means = mean(mean_vowel),
+      sd_of_means = sd(mean_vowel)
+    )
+  
+  out_df <- in_df %>%
+    left_join(mean_of_means) %>%
+    mutate(
+      lob2 = (formant_value - mean_of_means)/sd_of_means
+    ) %>%
+    select(
+      -c(mean_of_means, mean_vowel, sd_of_means)
+    )
+  
+  # If this is by interval, change name of out column to reflect this.
+  if (by_interval == TRUE) {
+    out_df <- out_df %>%
+      rename(
+        lob2_int = lob2
+      )
+  }
+  
+  out_df
+}
+
+qb_vowels <- add_lobanov(qb_vowels)
+```
+
+We now create a dataframe containing a columns for each formant of each vowel,
+and rows corresponding to speakers. Each speaker will have a set of rows for
+each normalisation method, and, within each method, a row for each vowel. 
+There will be distinct columns for F1 and F2 values.
+``` {r}
+qb_vowel_spaces <- qb_vowels %>%
+  rename(
+    raw = formant_value
+  ) %>%
+  # Take averages of raw and Lobanov 2 values for each speaker.
+  group_by(Speaker, Vowel, formant_type) %>%
+  summarise(
+    raw = mean(raw),
+    lob2 = mean(lob2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = c("raw", "lob2"), # Collect the two columns just renamed.
+    names_to = "norm",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = "formant_type",
+    values_from = "value"
+  )
+```
+
+We define a function to plot vowel spaces and look at an example of the raw and
+the normalised vowel spaces. The function `plot_space` takes a single vowel
+space as a dataframe. We have to manually set the limits for scales which are
+reversed (as in standard F1/F2 vowel plots). The function we define here will
+be used for single interval spaces, so we include code to deal with this
+as well.
+``` {r space-plot-function}
+plot_space <- function(space, titles = TRUE) {
+  # Plot vowel space assuming a row for each vowel type (in column 'Vowel') and
+  # columns for F1 and F2 (named 'F1_50' and 'F2_50'). Assumes 'norm' column 
+  # which tracks what kind of normalisation has been applied. Assumes 
+  # "Speaker" or "speaker_interval" column to generate plot title. If titles
+  # argument set to FALSE, then no titles will be printed.
+  
+  # Check normalisation column is consistent.
+  if (n_distinct(space$norm) == 1) {
+    norm_method = space$norm[[1]]
+  } else {
+    warning("Multiple normalisation methods detected.")
+  }
+  
+  # Detects whether vowel space is for interval or for entire monologue.
+  if ("speaker_interval" %in% names(space)) {
+    plot_title = glue("{space$speaker_interval[[1]]} vowel space")
+  } else {
+    plot_title = glue("{space$Speaker[[1]]} vowel space")
+  }
+  
+  if (norm_method %in% c("lob2", "lob2_int", "lob2_int_240", "lob2_int_60")) {
+    
+    # Set appropriate plot limits and labels
+    #f2_limits <- c(2.4, -2.4)
+    #f1_limits <- c(2.4, -2)
+    f2_label <- "F2 (normalised)"
+    f1_label <- "F1 (normalised)"
+    
+    # Set plot subtitle
+    if (norm_method == "lob2") {
+      plot_subtitle = "Lobanov 2.0 normalization"
+    } else { # Only alternative is "lob2_int"
+      plot_subtitle = "Lobanov 2.0 normalization (interval level)"
+    }
+    
+  } else {
+    
+    f2_label <- "F2 (Hz)"
+    f1_label <- "F1 (Hz)"
+    plot_subtitle = "Non-normalized data"
+    
+  }
+  
+  out_plot <- space %>%
+    ggplot(
+      aes(
+        x = F2_50, 
+        y = F1_50, 
+        label = Vowel, 
+        colour = Vowel
+      )
+    ) +
+    scale_color_manual(
+      values = vowel_colours
+    ) +
+    geom_text(show.legend = FALSE) +
+    scale_x_reverse(
+      position = "top", 
+      name = f2_label, 
+      expand = expansion(mult = 0.2)
+    ) +
+    scale_y_reverse(
+      position = "right", 
+      name = f1_label, 
+      expand = expansion(mult = 0.2)
+    )
+  
+  if (titles == TRUE) {
+    out_plot <- out_plot +
+    labs(
+      title = plot_title,
+      subtitle = plot_subtitle
+    ) 
+  }
+  
+  out_plot
+}
+```
+
+We now look at an example speaker's normalised and non-normalised vowel space.
+``` {r test-vs-plot, fig.cap="Example of normalised and non-normalised vowel space plots."}
+test_speaker = qb_vowel_spaces %>% pull(Speaker) %>% unique() %>% pluck(5)
+
+plot_space(
+  qb_vowel_spaces %>%
+    filter(
+      norm == "lob2",
+      Speaker == test_speaker
+    )
+) + plot_space(
+  qb_vowel_spaces %>%
+    filter(
+      norm == "raw",
+      Speaker == test_speaker
+    )
+)
+```
+
+We will also want vowel spaces for specific intervals. Now, three normalisation
+methods are needed: Lobanov 2.0 normalisation for entire recordings, Lobanov 2.0
+for individual intervals, and raw values. Normalisation within interval will be
+most successful for the 240 second intervals, as the 60 second intervals often
+lack sufficient tokens for each vowel.
+
+The following code cuts up the monologues into intervals again, takes their
+whole-monologue Lobanov 2 and raw values, and generates a within-interval
+normalised value.
+``` {r}
+qb_intervals <- qb_vowels %>%
+  group_by(Speaker) %>%
+  mutate(
+    interval_60 = as.numeric(
+      as.factor(
+        cut(
+          time_unscaled, 
+          breaks = seq(0, max(time_unscaled) + 60, 60))
+        )
+      )*60,
+    interval_240 = as.numeric(
+      as.factor(
+        cut(
+          time_unscaled, 
+          breaks = seq(0, max(time_unscaled) + 240, 240))
+        )
+      )*240
+  ) %>%
+  # Mark trailing intervals for removal (using NA_real_) (final intervals which
+  # are less than 3/4 of the full length)
+  mutate(
+    speaker_length = max(time_unscaled),
+    remaining_from_start_60 = speaker_length - (interval_60 - 60),
+    remaining_from_start_240 = speaker_length - (interval_240 - 240),
+    interval_60 = if_else(remaining_from_start_60 >= 45, interval_60, NA_real_),
+    interval_240 = if_else(remaining_from_start_240 >= 180, interval_240, NA_real_),
+  ) %>%
+  rename(
+    "60" = interval_60,
+    "240" = interval_240
+  ) %>%
+  pivot_longer(
+    cols = c("60", "240"),
+    names_to = "interval_length",
+    values_to = "interval"
+  ) %>%  
+  # This step removes the trailing intervals (not done earlier as would remove
+  # 60s intervals covering data not included in the 240s intervals.)
+  filter(
+    !is.na(interval)
+  )
+
+# Collect interval spaces with Lobanov 2 normalisation by interval.
+lob2_int_spaces <- qb_intervals %>%
+  group_by(interval_length) %>%
+  # Apply lobanov 2 separately to each interval length.
+  nest() %>%
+  mutate(
+    # Generate lobanov 2 values by interval
+    lob2_by_interval = map(data, ~ add_lobanov(.x, by_interval = TRUE)),
+    # Summarise for single value per vowel+formant per interval
+    lob2_by_interval = map(
+      lob2_by_interval, 
+      ~ .x %>%
+        group_by(
+           Speaker, interval, Vowel, formant_type
+         ) %>%
+         summarise(
+           lob2_int = mean(lob2_int)
+         )
+    )
+  ) %>%
+  select(interval_length, lob2_by_interval) %>%
+  unnest(lob2_by_interval)
+
+# Collect interval vowel spaces with raw values and by-monologue Lobanov 2
+# normalisation.
+qb_interval_spaces <- qb_intervals %>%
+  rename(
+    # Rename to match "raw" in norm variable of qb_vowel_spaces.
+    raw = formant_value 
+  ) %>%
+  # calculate interval amplitude values.
+  group_by(interval_length, Speaker, interval) %>%
+  mutate(
+    scaled_amp = mean(scaled_amp),
+    raw_amp = mean(amp)
+  ) %>%
+  group_by(interval_length, Speaker, interval, Vowel, formant_type) %>%
+  summarise(
+    lob2 = mean(lob2),
+    raw = mean(raw),
+    scaled_amp = first(scaled_amp),
+    raw_amp = first(amp)
+  )
+
+# Add by-interval normalisation values to the others.
+qb_interval_spaces <- qb_interval_spaces %>%
+  left_join(
+    lob2_int_spaces
+  ) %>%
+  pivot_longer(
+    cols = c(lob2, raw, lob2_int),
+    names_to = "norm",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = "formant_type",
+    values_from = "value"
+  ) %>%
+  # Out plot function requires a 'speaker_interval' column,
+  # It will also be required in order to join the PC1_scores.
+  mutate(
+    speaker_interval = str_c(Speaker, "_", interval),
+    interval = as.character(interval)
+  )
+```
+
+We use our `plot_space` function to look at two normalised interval vowel spaces
+for `r test_speaker`.
+``` {r example-int-plots, fig.cap = "Example plot of interval vowel spaces, normalised at interval level (60s)."}
+plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2_int",
+      Speaker == test_speaker,
+      interval == "60",
+      interval_length == "60"
+    )
+) + plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2_int",
+      Speaker == test_speaker,
+      interval == "120",
+      interval_length == "60"
+    )
+)
+```
+
+Figure \@ref(fig:example-int-plots) shows an example of two distinct intervals
+from the same speaker, normalised at the interval level. Note that Lobanov 
+normalisation works best when all vowels are present! In this case 
+<span style="font-variant: small-caps;">goose</span> is missing from
+the panel on the right. To look at different speakers, modify the block
+above or use the Shiny app in Section \@ref(shiny).
+
+It is worth looking at how different the results of the two normalisation
+methods are. We look at a summary measure of the difference between the two.
+``` {r}
+norm_method_difference <- qb_interval_spaces %>%
+  filter(
+    norm != "raw"
+  ) %>%
+  pivot_longer(
+    cols = c("F1_50", "F2_50"),
+    names_to = "formant_type",
+    values_to = "formant_value"
+  ) %>%
+  pivot_wider(
+    names_from = "norm",
+    values_from = "formant_value"
+  ) %>%
+  mutate(
+    difference = abs(lob2 - lob2_int)
+  ) 
+
+differences <- norm_method_difference %>%
+  pull(difference)
+
+summary(differences)
+hist(differences)
+```
+
+We should look at the large differences (judging by the histogram above, we call
+'large' anything above 1):
+``` {r}
+norm_method_difference %>%
+  filter(
+    difference > 1
+  ) %>%
+  arrange(interval_length, desc(difference))
+```
+
+The table above indicates one speakers is affected in the 240 second
+intervals. We can look at the difference for `QB_NZ_F_466`.
+``` {r lob2-differences-plot, fig.cap = "Speaker with large difference between Lobanov 2.0 at whole monologue and interval levels."}
+plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2_int",
+      Speaker == "QB_NZ_F_466",
+      interval == "240",
+      interval_length == "240"
+    )
+) + plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2",
+      Speaker == "QB_NZ_F_466",
+      interval == "240",
+      interval_length == "240"
+    )
+)
+```
+The within-interval normalisation moves <span style="font-variant: small-caps;">fleece</span> and <span style="font-variant: small-caps;">thought</span> Closer to the centre of the vowel space. Otherwise, the vowel space
+for this interval is not particularly affected. It may be that this interval contains
+quite extreme values for <span style="font-variant: small-caps;">fleece</span>`.
+Exploring this in detail would take us beyond the current problem.
+
+How many speakers are affected in the 60 second intervals?
+``` {r}
+norm_method_difference %>%
+  filter(
+    difference > 1,
+    interval_length == "60"
+  ) %>%
+  ungroup() %>%
+  group_by(Speaker) %>%
+  summarise(
+    n = n()
+  ) %>%
+  ggplot(
+    aes(
+      x = Speaker,
+      y =  n
+    )
+  ) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90))
+```
+Two speakers stick out from the rest (`QB_NZ_F_466` and `QB_NZ_F_870`).
+If our main topic were normalisation methods, we would now spend some time 
+working out what is special about these speaker such that they represent the
+majority of our large differences between normalisation methods. However, we
+will simply note the participant code in case they come up in our similarity
+plots.^[We also exclude them from the Shiny app to explore speaker vowel spaces
+which will be presented below.]
+
+We can look at the same intervals as in \@ref(fig:example-int-plots)
+but using the whole-monologue version of Lobanov
+2.0 normalisation.
+``` {r example-int-plots-lob2, fig.cap = "Example plot of interval vowel spaces, normalised at monologue level (60s)."}
+plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2",
+      Speaker == test_speaker,
+      interval == "60",
+      interval_length == "60"
+    )
+) + plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2",
+      Speaker == test_speaker,
+      interval == "120",
+      interval_length == "60"
+    )
+)
+```
+
+There are no obvious, visually discernible, differences here.
+
+It will be safer to use Lobanov by interval on the 240 second interval 
+data as this tends to have complete vowel spaces.
+``` {r example-int-plots-240, fig.cap = "Example plot of interval vowel spaces, normalised at interval level (240s)."}
+plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2_int",
+      Speaker == test_speaker,
+      interval == "240",
+      interval_length == "240"
+    )
+) + plot_space(
+  qb_interval_spaces %>%
+    filter(
+      norm == "lob2_int",
+      Speaker == test_speaker,
+      interval == "480",
+      interval_length == "240"
+    )
+)
+```
+
+Figure \@ref(fig:example-int-plots-240) shows two different 240 second intervals
+from the same speaker, with Lobanov 2.0 normalisation applied separately to 
+each interval.
+
+The final step in the process of data wrangling is to add a by-interval
+normalised value to the full vowel spaces. That is, we want to know what a
+speaker's vowel space looks like if we normalise each of their intervals and
+then take their average as a representation of their vowel spaces over the
+full monologue. Since there are two interval lengths, this will result in two
+additional values for each token.
+
+``` {r}
+int_lob2_full_vowel_spaces <- qb_interval_spaces %>%
+  select(
+    interval_length, Speaker, interval, Vowel, norm, F1_50, F2_50
+  ) %>% 
+  filter(
+    norm == "lob2_int"
+  ) %>%
+  group_by(interval_length, Speaker, Vowel, norm) %>%
+  summarise(
+    F1_50 = mean(F1_50, na.rm=TRUE), # na.rm because some intervals may miss given vowels.
+    F2_50 = mean(F2_50, na.rm=TRUE)
+  ) %>%
+  # Preparing to row bind with qb_vowel_spaces
+  mutate(
+    norm = glue("lob2_int_{interval_length}")
+  ) %>%
+  ungroup() %>%
+  select(-interval_length)
+
+
+qb_vowel_spaces <- bind_rows(qb_vowel_spaces, int_lob2_full_vowel_spaces)
+```
+
+## PCs and vowel spaces
+
+One simple way to return to our raw data from our PCA is to look at the average
+vowel space for those intervals high in PC1 and those intervals low in PC1.
+Here, we take 1.5 and -1.5 to be our cut offs for high and low, respectively. We
+will use the Lobanov 2.0 normalisation to enable meaningful summary values
+across speakers.
+
+``` {r mean-tails, fig.dim=c(7, 12), fig.cap="Mean vowel space of F1 score tails."}
+# Add pc scores to interval vowel space data.
+qb_interval_spaces <- qb_interval_spaces %>%
+  left_join(
+    qb_intervals_and_scores %>%
+      select(interval_length, speaker_interval, PC1_score) %>%
+      mutate(interval_length = as.character(interval_length))
+  )
+
+# We take the intervals which have "high" or "low" PC1 scores
+PC1_tails <- qb_interval_spaces %>% 
+  mutate(
+    high = PC1_score > 1.5,
+    low = PC1_score < -1.5,
+  ) %>%
+  filter(high | low) %>%
+  # Reshape so one column tracks whether high or low.
+  pivot_longer(
+    cols = c(high, low),
+    names_to = "height",
+    values_to = "value"
+  ) %>%
+  ungroup() %>%
+  filter(
+    value == TRUE
+  ) %>%
+  select(-value)
+
+PC1_tails %>%
+  filter(
+    norm == "lob2"
+  ) %>%
+  group_by(interval_length, Vowel, height) %>%
+  summarise(
+    F1_50 = mean(F1_50),
+    F2_50 = mean(F2_50)
+  ) %>% 
+  ggplot(
+    aes(
+      x = F2_50, 
+      y = F1_50, 
+      label = Vowel, 
+      colour = Vowel
+    )
+  ) +
+  scale_color_manual(
+    values = vowel_colours
+  ) +
+  geom_text(show.legend = FALSE) +
+  scale_x_reverse(
+    position = "top", 
+    name = "F2 (normalised)",
+    limits = c(2.4, -2.4)
+  ) +
+  scale_y_reverse(
+    position = "right", 
+    name = "F1 (normalised)", 
+    limits = c(2.4, -1.75)
+  ) +
+  labs(
+    title = "Mean vowel space of F1 score tails",
+    subtitle = "Lobanov 2 normalisation"
+  ) +
+  facet_grid(cols = vars(height), rows=vars(interval_length))
+```
+
+Figure \@ref(fig:mean-tails) does not tell us a great deal. We know that high
+values for PC1 in our PCA analysis come with higher F1 values, across the board.
+So, unsurprisingly, the average high-PC1 and low-PC1 vowel spaces in this corpus
+appear, roughly, to be vertical transpositions of one another. However, the 
+figure is valuable insofar as it is our first shift from PC values to actual,
+albeit normalised, vowel spaces.
+
+We can also look at high and low intervals within the same speaker. We find 
+speakers with intervals in both tails.
+``` {r}
+speakers_in_both_tails <- PC1_tails %>%
+  group_by(interval_length, Speaker) %>%
+  summarise(
+    heights = n_distinct(height)
+  ) %>%
+  filter(
+    heights == 2 # Speaker has both a high and low
+  ) %>%
+  ungroup() %>%
+  group_by(Speaker) %>%
+  summarise(
+    interval_lengths = n_distinct(interval_length)
+  ) %>%
+  filter(
+    interval_lengths == 2 # Speaker has high and low in both 60 and 240s intervals
+  ) %>% 
+  pull(Speaker) %>%
+  unique()
+
+PC1_tails %>%
+  filter(
+    Speaker %in% speakers_in_both_tails
+  )
+```
+
+We look at intervals for the first speaker, `r speakers_in_both_tails[[1]]`.
+First, with raw values.
+``` {r example-single-speaker, fig.dim=c(7, 12), fig.cap="Example speaker, low and high intervals at both sizes. Raw formant values given."}
+
+plot_multispace <- function(in_df, normalised = FALSE) {
+  # Frequently used plotting code, up to but not including setting
+  # title of facets.
+  
+    if (normalised == TRUE) {
+    
+      # Set appropriate plot limits and labels
+      f2_limits <- c(2.4, -2.4)
+      f1_limits <- c(2.4, -1.75)
+      f2_label <- "F2 (normalised)"
+      f1_label <- "F1 (normalised)"
+    
+    } else {
+    
+      f2_limits <- rev(range(in_df$F2_50) + c(-150, 150))
+      f1_limits <- rev(range(in_df$F1_50) + c(-50, 50))
+      f2_label <- "F2"
+      f1_label <- "F1"
+    
+  }
+  
+  out_plot <- in_df %>% 
+    ggplot(
+      aes(
+        x = F2_50, 
+        y = F1_50, 
+        label = Vowel, 
+        colour = Vowel
+      )
+    ) +
+    scale_color_manual(
+      values = vowel_colours
+    ) +
+    geom_text(show.legend = FALSE) +
+    scale_x_reverse(
+      position = "top", 
+      name = f2_label, 
+      limits = f2_limits
+    ) +
+    scale_y_reverse(
+      position = "right", 
+      name = f1_label, 
+      limits = f1_limits
+    )
+}
+
+
+
+single_speaker_contrast_plot <- function(
+    in_df, speaker, high_60, low_60, high_240, low_240, norm_method
+) {
+  # Use plot_multispace function to generate grid plot for a 
+  # high and low interval for both interval lengths.
+  
+  plot_data <- in_df %>%
+    filter(
+      Speaker == speaker,
+      norm == norm_method,
+      (interval_length == "60" & interval == high_60) |
+        (interval_length == "60" & interval == low_60) |
+        (interval_length == "240" & interval == high_240) |
+        (interval_length == "240" & interval == low_240)
+    ) %>%
+    # A trick to add the PC1_score assumes DRESS always present
+    mutate(
+      PC1_score = if_else(Vowel == "DRESS", PC1_score, NA_real_)
+    )
+  
+  if (norm_method == "raw") {
+    non_faceted_plot <- plot_multispace(plot_data)
+  } else {
+    non_faceted_plot <- plot_multispace(plot_data, normalised = TRUE)
+  }
+  
+  
+  out_plot <- non_faceted_plot +
+    # PC1_score label trick
+    geom_label(
+      aes(
+        label = glue("PC1: {signif(PC1_score, 2)}, Amp: {signif(scaled_amp, 2)}")
+      ),
+      x = -Inf,
+      y = -Inf,
+      vjust = 0,
+      hjust = 0,
+      alpha = 0.5,
+      na.rm = TRUE,
+      inherit.aes = FALSE,
+      data = plot_data %>% filter(Vowel == "DRESS")
+    ) +
+    labs(
+      title = glue("{speaker} contrasting intervals."),
+      subtitle = glue(
+        "High 60s: {high_60}, low 60s: {low_60}; ",
+        "high_240: {high_240}, low 240: {low_240}")
+    ) +
+    facet_grid(
+      cols = vars(height), 
+      rows = vars(interval_length),
+      labeller = as_labeller(
+        c(
+          "high" = "High PC1",
+          "low" = "Low PC1",
+          "240" = "240 seconds",
+          "60" = "60 seconds"
+        )
+      )
+    )
+}
+
+
+
+test_speaker <- speakers_in_both_tails[[1]]
+# These values picked out by using the RStudio View function to 
+# interact with the PC1_tails dataframe.
+high_60 <- 180   
+low_60 <- 1680
+high_240 <- 240
+low_240 <- 960
+
+single_speaker_plot <- single_speaker_contrast_plot(
+  PC1_tails, 
+  test_speaker, 
+  high_60, 
+  low_60, 
+  high_240, 
+  low_240, 
+  "raw"
+)
+
+single_speaker_plot 
+```
+
+Figure \@ref(fig:example-single-speaker) shows a few features of these
+comparisons. We see that in the 60 second data, we are missing some vowel types
+(<span style="font-variant: small-caps;">trap</span> in the low PC1 interval). 
+In the 240 second intervals, for this speaker, we see a lot of
+movement in <span style="font-variant: small-caps;">thought</span> and 
+<span style="font-variant: small-caps;">strut</span>. It is also important to 
+note that amplitude and PC1 score do not exactly follow one another. In fact,
+thhe correlation between the two is `r signif(cor(qb_interval_spaces$PC1_score, qb_interval_spaces$scaled_amp, use="complete.obs"), 2)`.
+
+We can look at another speaker:
+``` {r example-single-speaker-2, fig.dim=c(7, 12), fig.cap="Example speaker, low and high intervals at both sizes. Raw formant values given."}
+test_speaker <- "QB_NZ_M_626"
+# These values picked out by using the RStudio View function to 
+# interact with the PC1_tails dataframe.
+high_60 <- 840   
+low_60 <- 2700
+high_240 <- 1920
+low_240 <- 2880
+
+single_speaker_plot <- single_speaker_contrast_plot(
+  PC1_tails, 
+  test_speaker, 
+  high_60, 
+  low_60, 
+  high_240, 
+  low_240, 
+  "raw"
+)
+
+single_speaker_plot
+```
+Figure \@ref(fig:example-single-speaker-2) shows that we still have some 
+extreme values in our data and that this can be tracked by our PCs. Our high PC1
+60 second interval has a <span style = "font-variant: small-caps;">goose</span> with an F1 of around 250hz. 
+
+## Vowel space similarity
+
+We have seen that high-PC1 and low-PC1 intervals can look quite different from
+one another. Often sociolinguistic research relies on clustering speakers by 
+their vowel spaces. The effect of amplitude on F1 we've set out here will be
+of particular sociolinguistic interest if they can be shown to affect judgements
+of speaker similarity.
+
+We being by defining a notion of vowel space similarity. Given two vowel spaces,
+our first method takes the Euclidean distance between each available pair (i.e.
+the Euclidean distance between <span style="font-variant: small-caps;">dress</span> in the first vowel space and <span style="font-variant: small-caps;">dress</span> in the
+second vowel space, and so on and so on), and then takes the mean Euclidean 
+distance. This mean Euclidean distance should not be affected by the fact that,
+say, a vowel is missing in one of the spaces. 
+
+However, certain vowels have more room to move within the vowel space and so may
+dominate our first version of the measure. There's a lot more room for two
+instances of STRUT or START to be far apart from one another than for two
+instances of DRESS. To overcome this we also offer a distance measure using
+scaled Euclidean distances. This scaling requires that we compare two vowel
+spaces against the background of all of the vowel spaces in our data set. That
+is, we calculate the Euclidean distances between a given vowel space and every
+other vowel space in the corpus, and then z-score by vowel.^[This creates a
+non-standard notion of distance, insofar as 0 does not indicate that two objects are in the same place.
+Since we are only using this measure to rank vowel spaces by similarity this will not be
+a problem.] We then take the mean of the _scaled_ distance between two vowel
+spaces. This means that every vowel is equally weighted. In the function defined
+below, this scaling is carried out by setting `mean_scaled = TRUE`.
+
+
+``` {r}
+speaker_distances <- function(
+  space, 
+  all_speaker_data, 
+  norm_method, 
+  int_length,
+  mean_scaled = FALSE
+) {
+  
+  # Pick correct interval lob2 version for interval length.
+  if (norm_method == "lob2_int") {
+    norm_method <- glue("lob2_int_{int_length}")
+  }
+  
+  raw_distances <- all_speaker_data %>%
+    filter(
+      norm == norm_method,
+    ) %>%
+    left_join(
+      space %>% 
+        ungroup() %>% 
+        select(Vowel, F1_50, F2_50), 
+      by="Vowel"
+    ) %>%
+    mutate(
+      distance = sqrt((F1_50.x - F1_50.y)^2 + (F2_50.x - F2_50.y)^2) # Euclidean distance. 
+    ) 
+  
+  if (mean_scaled == TRUE) {
+    out <- raw_distances %>%
+      group_by(Vowel) %>%
+      mutate(
+        distance = scale(distance)
+      ) %>%
+      ungroup() %>%
+      group_by(Speaker) %>%
+      summarise(
+        distance = mean(distance) 
+      ) %>%
+      arrange(distance)
+  } else {
+    out <- raw_distances %>%
+      ungroup() %>%
+      group_by(Speaker) %>%
+      summarise(
+        distance = mean(distance)
+      ) %>%
+      arrange(distance)
+  }
+}
+```
+
+The function above allows us to look up the most similar vowel spaces to a given
+space. For example, we collect the most similar spaces to the low PC1 240s
+interval of `{r} speakers_in_both_tails[[1]]`.
+
+``` {r}
+test_speaker <- speakers_in_both_tails[[1]]
+
+mean_distances <- speaker_distances(
+  space = PC1_tails %>%
+    filter(
+      Speaker == test_speaker,
+      interval_length == "240",
+      interval == "960",
+      norm == "lob2"
+    ),
+  all_speaker_data = qb_vowel_spaces,
+  norm_method = "lob2",
+  int_length = "240",
+  mean_scaled = FALSE
+)
+
+mean_distances
+```
+We can do the same without mean scaling.
+
+``` {r}
+scaled_mean_distances <- speaker_distances(
+  space = PC1_tails %>%
+    filter(
+      Speaker == test_speaker,
+      interval_length == "240",
+      interval == "960",
+      norm == "lob2"
+    ),
+  all_speaker_data = qb_vowel_spaces,
+  norm_method = "lob2",
+  int_length = "240",
+  mean_scaled = TRUE
+)
+
+scaled_mean_distances
+```
+The top 10 here are very similar. In general, the correlation between the two
+measures is very high 
+(`r round(cor(mean_distances$distance, scaled_mean_distances$distance), digits = 3)`). 
+So we shouldn't worry too much about which measure we select.
+
+### Example similarity plot
+
+In this section we set out an example similarity plot. In the following section
+a Shiny will be embedded to explore all speakers with intervals in the high
+and low tails. The idea is to show that the speakers most similar to a high PC1
+interval of a given speaker and a low PC1 interval of a given speaker are 
+different from one another. If there is a discernible difference here, then
+amplitude variation within a recording will be sufficient to cluster speakers
+differently depending on where in the monologue we take our sample.
+
+We define functions to create the a plot comparing a high and low interval
+from the same speaker, along with their three most similar speaker vowel spaces.
+These are is a very general form so that they can be taken up in an interactive
+visualisation in the next section.
+``` {r similarity-plot-function}
+plot_panel <- function(
+  speaker, # Speaker whose interval is to be plotted
+  int, # Interval name
+  int_length, # Length of interval
+  interval_df, # Dataframe containing original interval
+  vowel_spaces_df, # Dataframe containing all vowel spaces
+  norm_method,
+  mean_scaled = TRUE,
+  high = TRUE
+) {
+  # Given an interval, this function returns a plot of the interval and the
+  # three most similar intervals.
+  interval_data <- interval_df %>%
+    filter(
+      Speaker == speaker,
+      interval == int,
+      norm == norm_method,
+      interval_length == int_length
+    )
+  
+  interval_plot <- plot_space(interval_data, titles = FALSE) +
+    geom_label(
+      aes(
+        label = glue(
+          # Add PC1 score and amplitude to interval plot
+          "PC1: {signif(PC1_score, 2)},  Amp: {signif(scaled_amp, 2)}"
+        )
+      ),
+      x = -Inf,
+      y = -Inf,
+      vjust = 0,
+      hjust = 0,
+      alpha = 0.5,
+      na.rm = TRUE,
+      inherit.aes = FALSE,
+      data = interval_data %>% filter(Vowel == "DRESS")
+    ) +
+    labs(
+      subtitle = glue("Interval: {speaker}_{int}"),
+      # subtitle = glue("Interval length: {int_length}")
+    )
+  
+  closest_3 <- speaker_distances(
+    interval_data,
+    vowel_spaces_df,
+    norm_method = norm_method,
+    int_length = int_length,
+    mean_scaled = mean_scaled
+  ) %>%
+    filter(
+      Speaker != speaker # Excludes speaker from most similar speakers
+    ) %>%
+    slice_head(n=3) %>%
+    pull(Speaker)
+  
+  # Change interval lob2 name for vowel space data frame.
+  if (norm_method == "lob2_int") {
+    vs_norm_method <- glue("lob2_int_{int_length}")
+  } else {
+    vs_norm_method <- norm_method
+  }
+  
+  similar_spaces <- vowel_spaces_df %>%
+    filter(
+      Speaker %in% closest_3,
+      norm == vs_norm_method
+    ) %>%
+    group_by(Speaker) %>%
+    nest() %>%
+    mutate(
+      plot = map(data, ~ plot_space(.x, titles = FALSE)),
+      plot = map2(plot, Speaker, ~ .x + labs(subtitle = glue("Speaker: {.y}")))
+    ) %>%
+    pull(plot)
+  
+  if (high) {
+    interval_title = "High amplitude interval"
+  } else {
+    interval_title = "Low amplitude interval"
+  }
+  
+  panel <- (
+    (interval_plot) + labs(title = interval_title) | 
+      (similar_spaces[[1]] + labs(title = "Most similar speakers")) | 
+      similar_spaces[[2]] | 
+      similar_spaces[[3]]
+    )
+}
+
+
+speaker_panel <- function(
+  speaker,
+  high_int,
+  low_int,
+  int_length,
+  norm_method,
+  mean_scaled = TRUE
+) {
+  high_panel <- plot_panel(
+    speaker,
+    high_int,
+    int_length,
+    qb_interval_spaces,
+    qb_vowel_spaces,
+    norm_method = norm_method,
+    mean_scaled = mean_scaled
+  )
+  low_panel <- plot_panel(
+    speaker,
+    low_int,
+    int_length,
+    qb_interval_spaces,
+    qb_vowel_spaces,
+    norm_method = norm_method,
+    mean_scaled = mean_scaled,
+    high = FALSE
+  )
+  
+  norm_title <- switch(
+    norm_method,
+    "lob2" = "Lobanov 2.0",
+    "lob2_int_240" = "Lobanov 2.0 (by interval)",
+    "lob2_int_60" = "Lobanov 2.0 (by interval)",
+    "lob2_int" = "Lobanov 2.0 (by interval)",
+    "raw" = "Raw frequency (Hz)",
+    stop("Invalid norm_method value")
+  )
+  
+  comp_panel <- high_panel/low_panel + plot_annotation(
+    title = paste(speaker, "Similarity Plot"),
+    subtitle = paste(norm_title, "similar speakers")
+  )
+  comp_panel
+}
+```
+
+An example:
+``` {r raw-example, fig.dim = c(11, 8), fig.cap = "Example similarity plot, raw hz in high and low intervals."}
+example_speaker_plot_raw <- speaker_panel(
+  "QB_NZ_F_132",
+  high_int = "240",
+  low_int = "720",
+  int_length = "240",
+  norm_method = "raw",
+  mean_scaled = TRUE
+)
+
+example_speaker_plot_raw
+```
+
+In the top left, Figure \@ref(fig:raw-example) shows an interval with a high 
+PC1 score from our 240 second interval PCA. To its right, we see the three most
+similar speakers by the similarity metric outlined in the previous section. 
+The figure shows data for raw HZ, so we should expect the similar speakers to be
+largely set out as similar in terms of their physical characteristics, especially
+their vocal tract length. In the bottom left, we have a low PC1 scoring interval
+and the three most similar vowel spaces to this interval. Note that the speakers
+are different in both rows. That is, different speakers are coming out as the
+most similar if we pick a high vs. a low PC1 interval for this speaker.
+
+``` {r lob2-example, fig.dim = c(11, 8), fig.cap = "Example similarity plot, Lobanov 2.0 Normalisation."}
+example_speaker_plot_lob2 <- speaker_panel(
+  "QB_NZ_F_132",
+  high_int = "240",
+  low_int = "720",
+  int_length = "240",
+  norm_method = "lob2",
+  mean_scaled = TRUE
+)
+
+
+example_speaker_plot_lob2
+```
+
+Figure \@ref(fig:lob2-example) shows the same speaker and intervals, but with
+all spaces scaled according to the Lobanov 2.0 normalisation. Again, the most
+similar speakers are different even when we apply a normalisation method which
+is, if anything, liable to overnormalise (see [Barreda and Nearey 2018](https://pubmed.ncbi.nlm.nih.gov/30075677/)).
+
+In the paper, we primarily introduce the Shiny as a means of exploring the
+difference between high and low amplitude intervals rather than for returning
+from PC scores to real vowel spaces. The latter is a core part of the
+exploratory use of PCA, the former is more important for the narrower question
+of the sociolinguistic consequences of F1 variation in amplitude.
+
+We use an example plot in the paper (Figure 5) with intervals which are high
+in both amplitude _and_ PC1 score.
+``` {r}
+# We take the intervals which have "high" or "low" amp scores. We, somewhat
+# arbitrarily set 0.3 as our cut off for high and low.
+amp_tails <- qb_interval_spaces %>% 
+  mutate(
+    high = scaled_amp > 0.3,
+    low = scaled_amp < -0.3,
+  ) %>%
+  filter(high | low) %>%
+  # Reshape so one column tracks whether high or low.
+  pivot_longer(
+    cols = c(high, low),
+    names_to = "height",
+    values_to = "value"
+  ) %>%
+  ungroup() %>%
+  filter(
+    value == TRUE
+  ) %>%
+  select(-value)
+
+speakers_in_both_amp_tails <- amp_tails %>%
+  group_by(interval_length, Speaker) %>%
+  summarise(
+    heights = n_distinct(height)
+  ) %>%
+  filter(
+    heights == 2 # Speaker has both a high and low
+  ) %>%
+  ungroup() %>%
+  group_by(Speaker) %>%
+  summarise(
+    interval_lengths = n_distinct(interval_length)
+  ) %>%
+  filter(
+    interval_lengths == 2 # Speaker has high and low in both 60 and 240s intervals
+  ) %>% 
+  pull(Speaker) %>%
+  unique()
+
+amp_tails %>%
+  filter(Speaker %in% speakers_in_both_amp_tails) %>%
+  group_by(Speaker, interval_length, interval) %>%
+  summarise(PC1_score = first(PC1_score), scaled_amp = first(scaled_amp)) %>%
+  arrange(interval_length)
+```
+
+We select 240 second intervals from `QB_NZ_F_830` from the table above.
+``` {r r amp-example, fig.dim = c(11, 8), fig.cap = "Example similarity plot, high and low amplitude intervals."}
+example_plot_paper <- speaker_panel(
+  "QB_NZ_F_830",
+  high_int = "240",
+  low_int = "480",
+  int_length = "240",
+  norm_method = "lob2",
+  mean_scaled = FALSE
+)
+
+ggsave(
+  here('plots', 'example_vs.png'),
+  plot = example_plot_paper,
+  units = "cm",
+  width = 30,
+  height = 25,
+  dpi = 500
+)
+
+example_plot_paper
+```
+
+### Shiny interactive {#shiny}
+
+We export data now to develop a Shiny interactive.
+``` {r, eval=FALSE}
+write_rds(
+  qb_interval_spaces,
+  here('processed_data', 'qb_interval_spaces.rds')
+)
+
+write_rds(
+  qb_vowel_spaces,
+  here('processed_data', 'qb_vowel_spaces.rds')
+)
+```
+
+The complete interactive is available at https://joshuawilsonblack.shinyapps.io/space_similarity_app/.
+It can also be interacted with here: 
+<iframe src="https://joshuawilsonblack.shinyapps.io/space_similarity_app/" height="900" width="100%" style="border: 1px solid #464646;" data-external="1"></iframe>
+
+For some speakers, the PC1 scores do not seem to lead to different lists of
+similar speakers (e.g. `QB_NZ_F_150`, with Raw Hz, intervals 480 and 1200, and
+scaled distances). However, the fact that produces different judgements for _many_
+speakers should engender caution. The `models.Rmd` file will provide further
+reasons for concern when we compare the effect of amplitude to the widely
+controlled-for effect of articulation rate.
+
+#### Kendall's Tau
+
+Let's check to what extent similarity lists are correlated. We use Kendall's
+Tau. We again define an interval as 'high' if it has a PC1 score above 1 and
+'low' if it has a PC1 score below 1. We collect the speakers with both high 
+and low intervals and then select their highest and their lowest intervals.
+For each, we then generate lists of the most similar speaker vowel spaces in
+the corpus for the high interval and the low interval. These lists are then
+compared using Kendall's Tau.
+
+``` {r sim-list-correlatio, fig.cap="Kendall Tau correlation of lists of similar speakers for high and low PC1 intervals."}
+PC1_tails <- qb_interval_spaces %>%
+  group_by(interval_length, Speaker, interval) %>%
+  mutate(
+      n = n_distinct(Vowel)
+  ) %>%
+  filter(
+      n == 10 # We only want complete intervals for the distance measure.
+  ) %>%
+  mutate(
+      height = if_else(PC1_score > 1, "high", NULL),
+      height = if_else(PC1_score < -1, "low", height)
+  ) 
+
+
+candidate_speakers <- PC1_tails %>%
+  filter(
+      height %in% c("high", "low")
+  ) %>%
+  group_by(interval_length, Speaker) %>%
+  summarise(
+      heights = n_distinct(height)
+  ) %>%
+  filter(
+      heights == 2 # Speaker has both a high and low
+  )
+
+speaker_index <- qb_vowel_spaces %>%
+  group_by(Speaker) %>%
+  summarise(
+    temp_for_cumsum = 1
+  ) %>%
+  ungroup() %>%
+  mutate(
+    speaker_index = cumsum(temp_for_cumsum)
+  ) %>%
+  select(-temp_for_cumsum)
+
+kendall_cors <- PC1_tails %>%
+  filter(
+    ((interval_length == "240") & 
+      (Speaker %in% (candidate_speakers %>% 
+         filter(interval_length == "240") %>% 
+         pull(Speaker)
+       ))) |
+      ((interval_length == "60") & 
+      (Speaker %in% (candidate_speakers %>% 
+         filter(interval_length == "60") %>% 
+         pull(Speaker)
+       )))
+  ) %>%
+  group_by(interval_length, Speaker) %>%
+  mutate(
+    int_no = cumsum(interval) / as.numeric(interval_length),
+    min_PC1_score = min(PC1_score),
+    max_PC1_score = max(PC1_score)
+  ) %>%
+  filter(
+    PC1_score == max_PC1_score |
+    PC1_score == min_PC1_score
+  ) %>%
+  group_by(interval_length, norm, Speaker, height) %>%
+  nest() %>%
+  pivot_wider(
+    names_from = "height",
+    values_from = "data"
+  ) %>%
+  mutate(
+    high_similar_speakers = pmap(
+      list(interval_length, norm, high),  
+      ~ speaker_distances(
+        space = ..3,
+        all_speaker_data = qb_vowel_spaces,
+        norm_method = ..2,
+        int_length = ..1,
+        mean_scaled = TRUE
+      )
+    ),
+    low_similar_speakers = pmap(
+      list(interval_length, norm, low),  
+      ~ speaker_distances(
+        space = ..3,
+        all_speaker_data = qb_vowel_spaces,
+        norm_method = ..2,
+        int_length = ..1,
+        mean_scaled = TRUE
+      )
+    ),
+    kendall_test = map2(
+      high_similar_speakers, 
+      low_similar_speakers,
+      ~ cor.test(.x %>% 
+              left_join(
+                speaker_index %>% 
+                  select(Speaker, speaker_index)) %>% 
+              pull(speaker_index), 
+            .y %>% 
+              left_join(
+                speaker_index %>% 
+                  select(Speaker, speaker_index)) %>% 
+              pull(speaker_index), 
+            method = "kendall"
+      )
+    ),
+    kendall_cor = map_dbl(kendall_test, ~ .x$estimate),
+    kendall_p = map_dbl(kendall_test, ~ .x$p.value)
+  ) %>%
+  select(-c('high', 'low'))
+
+kendall_cors %>%
+  mutate(
+    gender = if_else(
+      str_detect(Speaker, '_F_'),
+      'F',
+      'M'
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = kendall_cor,
+      fill = gender
+    )
+  ) +
+  geom_histogram(bins = 30) +
+  facet_grid(cols = vars(interval_length), rows = vars(norm))
+```
+There is no strong correlation for the normalised variables. We would expect
+there to be _some_ similarity between the lists, of course! For some speakers, 
+the correlation is _negative_!
+
+We can have a look at the distribution of p-values for these correlations as
+well.
+``` {r kendall-p, fig.cap = "P-values for Kendall Tau on similarity lists."}
+kendall_cors %>%
+  mutate(
+    gender = if_else(
+      str_detect(Speaker, '_F_'),
+      'F',
+      'M'
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = kendall_p,
+      fill = gender
+    )
+  ) +
+  geom_histogram(bins = 30) +
+  facet_grid(cols = vars(interval_length), rows = vars(norm))
+```
+We see a massive increase in the significance of the correlations when in the 
+raw values. This suggests that the physiological similarity of speakers, 
+removed by normalisation, is generating the higher correlations between lists
+than we have seen for the raw values.
+
+We now do the same using amplitude directly rather than PC score. We filter so 
+we're only looking at intervals below -0.2 or above 0.2 in scaled amplitude.
+``` {r sim-list-correlation-amp, fig.cap="Kendall Tau correlation of lists of similar speakers for high and low amplitude intervals."}
+amp_tails <- qb_interval_spaces %>%
+  group_by(interval_length, Speaker, interval) %>%
+  mutate(
+      n = n_distinct(Vowel)
+  ) %>%
+  filter(
+      n == 10 # We only want complete intervals for the distance measure.
+  ) %>%
+  mutate(
+      height = if_else(scaled_amp > 0.2, "high", NULL),
+      height = if_else(scaled_amp < -0.2, "low", height)
+  ) 
+
+
+candidate_speakers <- amp_tails %>%
+  filter(
+      height %in% c("high", "low")
+  ) %>%
+  group_by(interval_length, Speaker) %>%
+  summarise(
+      heights = n_distinct(height)
+  ) %>%
+  filter(
+      heights == 2 # Speaker has both a high and low
+  )
+
+speaker_index <- qb_vowel_spaces %>%
+  group_by(Speaker) %>%
+  summarise(
+    temp_for_cumsum = 1
+  ) %>%
+  ungroup() %>%
+  mutate(
+    speaker_index = cumsum(temp_for_cumsum)
+  ) %>%
+  select(-temp_for_cumsum)
+
+kendall_cors <- amp_tails %>%
+  filter(
+    ((interval_length == "240") & 
+      (Speaker %in% (candidate_speakers %>% 
+         filter(interval_length == "240") %>% 
+         pull(Speaker)
+       ))) |
+      ((interval_length == "60") & 
+      (Speaker %in% (candidate_speakers %>% 
+         filter(interval_length == "60") %>% 
+         pull(Speaker)
+       )))
+  ) %>%
+  group_by(interval_length, Speaker) %>%
+  mutate(
+    int_no = cumsum(interval) / as.numeric(interval_length),
+    min_scaled_amp = min(scaled_amp),
+    max_scaled_amp = max(scaled_amp)
+  ) %>%
+  filter(
+    scaled_amp == max_scaled_amp |
+    scaled_amp == min_scaled_amp
+  ) %>%
+  group_by(interval_length, norm, Speaker, height) %>%
+  nest() %>%
+  pivot_wider(
+    names_from = "height",
+    values_from = "data"
+  ) %>%
+  mutate(
+    high_similar_speakers = pmap(
+      list(interval_length, norm, high),  
+      ~ speaker_distances(
+        space = ..3,
+        all_speaker_data = qb_vowel_spaces,
+        norm_method = ..2,
+        int_length = ..1,
+        mean_scaled = TRUE
+      )
+    ),
+    low_similar_speakers = pmap(
+      list(interval_length, norm, low),  
+      ~ speaker_distances(
+        space = ..3,
+        all_speaker_data = qb_vowel_spaces,
+        norm_method = ..2,
+        int_length = ..1,
+        mean_scaled = TRUE
+      )
+    ),
+    kendall_test = map2(
+      high_similar_speakers, 
+      low_similar_speakers,
+      ~ cor.test(.x %>% 
+              left_join(
+                speaker_index %>% 
+                  select(Speaker, speaker_index)) %>% 
+              pull(speaker_index), 
+            .y %>% 
+              left_join(
+                speaker_index %>% 
+                  select(Speaker, speaker_index)) %>% 
+              pull(speaker_index), 
+            method = "kendall"
+      )
+    ),
+    kendall_cor = map_dbl(kendall_test, ~ .x$estimate),
+    kendall_p = map_dbl(kendall_test, ~ .x$p.value)
+  ) %>%
+  select(-c('high', 'low'))
+
+kendall_cors %>%
+  mutate(
+    gender = if_else(
+      str_detect(Speaker, '_F_'),
+      'F',
+      'M'
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = kendall_cor,
+      fill = gender
+    )
+  ) +
+  geom_histogram(bins = 30) +
+  facet_grid(cols = vars(interval_length), rows = vars(norm))
+```
+And we look at the p-values:
+``` {r kendall-p-amp, fig.cap = "P-values for Kendall Tau on amplitude similarity lists."}
+kendall_cors %>%
+  mutate(
+    gender = if_else(
+      str_detect(Speaker, '_F_'),
+      'F',
+      'M'
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = kendall_p,
+      fill = gender
+    )
+  ) +
+  geom_histogram(bins = 30) +
+  facet_grid(cols = vars(interval_length), rows = vars(norm))
+```
+The above two plots are of a piece with those generated using PC1 rather than
+amplitude.
+
+### PC1 High and Low F1s Plot.
+
+Another question concerning PC1 scores and amplitude is how the different 
+vowels are implicated in the relationship. For each speaker, we take the mean scaled F1 for 
+their lowest PC1 interval and their mean scaled F1 for their highest PC1
+interval and plot them against one another.
+
+``` {r relationship-by-vowel, fig.cap = "Average scaled F1 of high Pc1 and low Pc1 intervals."}
+qb_imputed %>%
+  mutate(
+    speaker_interval = str_c(Speaker, "_", interval)
+  ) %>%
+  left_join(
+    qb_intervals_and_scores %>%
+      select(interval_length, speaker_interval, PC1_score)
+  ) %>%
+  group_by(interval_length, Speaker) %>%
+  mutate(
+    min_PC1_score = min(PC1_score),
+    max_PC1_score = max(PC1_score)
+  ) %>%
+  group_by(interval_length, Speaker, Vowel) %>%
+  summarise(
+    low_PC1_F1 = mean(
+      if_else(
+        (PC1_score == min_PC1_score) & (formant_type == "F1_50"),
+        mean_int,
+        NA_real_),
+      na.rm = TRUE
+      ),
+    high_PC1_F1 = mean(
+      if_else(
+        (PC1_score == max_PC1_score) & (formant_type == "F1_50"),
+        mean_int,
+        NA_real_),
+      na.rm = TRUE
+      )
+  ) %>%
+  ggplot(
+    aes(
+      x = low_PC1_F1,
+      y = high_PC1_F1,
+      colour = Vowel
+    )
+  ) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_colour_manual(values = vowel_colours) +
+  facet_grid(cols = vars(interval_length))
+```
+
+This is not particularly clear. We supplement with an unscaled plot.
+
+``` {r unscaled-relationship-by-vowel, fig.cap = "Average unscaled scaled F1 of high Pc1 and low Pc1 intervals."}
+qb_interval_spaces %>%
+  group_by(interval_length, Speaker) %>%
+  mutate(
+    min_PC1_score = min(PC1_score),
+    max_PC1_score = max(PC1_score)
+  ) %>%
+  group_by(interval_length, Speaker, Vowel) %>%
+  summarise(
+    low_PC1_F1 = mean(
+      if_else(
+        PC1_score == min_PC1_score,
+        F1_50,
+        NA_real_),
+      na.rm = TRUE
+      ),
+    high_PC1_F1 = mean(
+      if_else(
+        PC1_score == max_PC1_score,
+        F1_50,
+        NA_real_),
+      na.rm = TRUE
+      )
+  ) %>%
+  ggplot(
+    aes(
+      x = low_PC1_F1,
+      y = high_PC1_F1,
+      colour = Vowel
+    )
+  ) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_colour_manual(values = vowel_colours) +
+  facet_grid(cols = vars(interval_length))
+```
+
+Neither of the above plots suggests that the effect of amplitude is carried 
+more by one vowel than another. This is particularly interesting given that
+<span style = "font-variant: small-caps;">goose</span> is hardly implicated in the 60 second PCA analysis. It is interesting to
+note the line of points in the 240 second data in Figure
+\@ref(fig:relationship-by-vowel), which indicates those speakers for whom there
+is only one interval.
+
+# Next steps
+
+This worksheet has presented our steps for carrying out a PCA analysis of our
+data and exploring the connection between variation in F1 values and amplitude.
+By turning back to the raw data, we have seen some of the real effect which
+the PCs we have highlighted are tracking. In particular, we have seen how
+relative amplitude can change the speakers which we take to be similar to each
+other. Insofar as sociolinguistic research relies on clustering speakers
+together, this effect will need to be taken into account.
+
+However, there is still more work to be done. In `SM4_models.Rmd` we explore
+the effect of amplitude on each vowel's F1 and show that amplitude has a
+tendency to drop over the course of a monologue, but also within subsets of 
+monologues. This has bearing both on how amplitude variation is being used
+by our speakers, but also on the feasibility of controlling for amplitude 
+variation's effects on F1.

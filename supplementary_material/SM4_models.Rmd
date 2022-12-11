@@ -1,0 +1,4203 @@
+---
+title: "SM4. Amplitude and Topic Models"
+subtitle: "Supplementary Material for 'The overlooked effect of amplitude on within-speaker vowel variation'"
+author: "Joshua Wilson Black, Jen Hay, Lynn Clark, James Brand"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  # bookdown::pdf_document2:
+  #   toc: yes
+  bookdown::html_document2:
+    fig_caption: true
+    toc: true
+    toc_float: true
+    theme: flatly
+    collapsed: no
+    df_print: paged
+    code_folding: show
+---
+
+
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #95A044;
+}
+
+pre {
+  max-height: 300px;
+  overflow-y: 300px;
+}
+</style>
+
+``` {r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  fig.align='center', 
+  warning = FALSE,
+  message = FALSE
+  )
+```
+
+
+# Overview
+
+In order to probe the phenomenon picked out by the first PC of our two PCA
+analyses, we fit a series of models. First, we model F1 on the basis of
+amplitude to see how changes in amplitude affect each vowel's F1. This is
+motivated by the thought that amplitude drives the common movement on F1
+found by the first PC in our PCA analysis (developed in `corpus_pca.Rmd`).
+
+Second, we investigate the sociolinguistic question of whether and to what
+extent changes in amplitude suggest that a speaker is coming to the end of a
+discrete topical unit of a monologue.
+
+For both questions we will first apply simple linear and linear mixed models, 
+before turning to more sophisticated GAMM models. 
+
+In order for this document to be independently understandable, we briefly run
+through the phenomenon of interest from the previous supplementary materials.
+
+We first load the required libraries and define global variables.
+
+``` {r}
+# Tidyverse and friends
+library(tidyverse)
+library(broom)
+library(glue)
+library(patchwork)
+
+# Animations
+library(gganimate) 
+library(magick)
+
+# Interactive plots
+library(plotly)
+
+# File management
+library(here)
+
+# Data scaling
+library(scales)
+
+# GAMMs
+library(mgcv)
+library(itsadug)
+library(gratia)
+
+# Linear Mixed Models
+library(lme4)
+library(optimx)
+library(car)
+
+# For variance inflation function
+library(car)
+
+# parallel computing - only used for `detectCores` function.
+library(parallel)
+
+
+# Global variables for plotting
+vowel_colours_with_foot <- c(
+  START = "#00B0F6",
+  STRUT = "#F8766D",
+  LOT = "#00BF7D",
+  TRAP = "#FF62BC",
+  FOOT = "#966432",
+  KIT = "#39B600",
+  NURSE = "#00BFC4",
+  THOUGHT = "#E76BF3",
+  DRESS = "#9590FF",
+  FLEECE = "#D89000",
+  GOOSE = "#A3A500"
+)
+
+# Order = order at which these vowels appear on the right side of the main plot
+# of the model of F1 by amplitude which is used in the paper. We don't reorder
+# for each plot in these supplementaries.
+vowels <- c(
+  "START", "STRUT", "LOT", "TRAP", "FOOT", "KIT", "NURSE", "THOUGHT", 
+  "DRESS", "FLEECE", "GOOSE"
+)
+
+# Sometimes it is useful to split plots between high vowels and others. 
+# We define high and low vowels here for this purpose.
+high_vowels <- c(
+  "DRESS",
+  "GOOSE",
+  "THOUGHT",
+  "FLEECE",
+  "NURSE"
+)
+
+front_vowels <- c(
+  "DRESS",
+  "FLEECE",
+  "NURSE",
+  "GOOSE",
+  "TRAP"
+)
+
+# Random seed set for reproducibility.
+set.seed(5)
+```
+
+``` {r pca-plot, fig.cap="Variables plots from PCA analysis."}
+knitr::include_graphics(here('plots', 'PCA_with_amplitude_varplot.png'))
+```
+
+As depicted in Figure \@ref(fig:pca-plot), PC1 of our PCA analysis for both 60
+second and 240 second intervals reveals that F1s of each vowel move together
+with amplitude, and that this effect explains around 7.7% of the variance for
+the 60 second intervals and around 10.3% of the variance for the 240 second
+intervals.
+
+In `SM2_interval_representation.Rmd`, examples of amplitude over the course of a
+monologue were presented. These seemed to suggest that amplitude systematically
+drops over time (e.g. the bottom panels of Figure 
+\@ref(fig:interval-amplitude)).
+
+``` {r interval-amplitude, fig.cap="Amplitude over the course of monologue for 60 and 240 second itnervals."}
+knitr::include_graphics(here('plots', 'QB_NZ_F_369_combined.png'))
+```
+
+We will be interested in whether changes in F1 over the course of a monologue
+are explained by changes in amplitude and whether there is some other effect
+which might explain systematic shifts in F1 over the course of a monologue.
+
+**Connection between SM4 and the paper:** The models reported in the paper are
+developed in Section 2.3 and Section 3.2. The remainder of the document 
+consists of assumption checks and exploration of alternative methods. The fact 
+that alternative methods produce compatible results provides a 'sanity check'
+on the methods which we do report.
+
+# F1 and Amplitude
+
+## Data exploration and transformation
+
+We load the filtered data.
+``` {r}
+qb_vowels <- read_rds(
+  here('processed_data', 'Quakebox_filtered.rds')
+)
+qb_vowels
+```
+
+### Scaling 
+
+We scale the variables so that they are comparable across speakers. Because we
+are unable to control for different recording environments, we will scale
+amplitude so we are dealing with relative amplitude within a monologue. We will
+also scale speaker formant values. In both cases, we are simply z-scoring using
+the base R `scale` function. We also scale articulation rate, pitch, and speaker
+length both within and across speakers. Both forms of scaling will be useful for
+fitting models. We also scale time so that each monologue has a value running
+from 0 to 1, where 0 is the first token in the monologue and 1 is the last.
+
+``` {r scaling-vars}
+# scale time, collect speaker length.
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker) %>%
+  rename(
+    time = Target.segments.start,
+    art_rate = utterance.articulation.rate,
+    pitch = MeanPitch
+  ) %>%
+  # Within speaker scaling.
+  mutate(
+    speaker_scaled_time = rescale(time, to = c(0, 1)),
+    speaker_length = max(time),
+    speaker_scaled_amp_max = scale(intensity_max),
+    speaker_scaled_art_rate = scale(art_rate),
+    speaker_scaled_pitch = scale(pitch) 
+  ) %>%
+  ungroup() %>%
+  # Across speaker scaling.
+  mutate(
+    scaled_art_rate = scale(art_rate),
+    scaled_pitch = scale(pitch),
+    scaled_length = scale(speaker_length)
+    # We don't scale amplitude across speakers as we can't control for recording
+    # variation.
+  )
+
+# Scale formant data
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker, Vowel) %>%
+  mutate(
+    speaker_scaled_F1 = scale(F1_50),
+    speaker_scaled_F2 = scale(F2_50)
+  ) %>%
+  # Remove rows with missing F1
+  filter(
+    !is.na(speaker_scaled_F1)
+  ) %>%
+  ungroup() %>%
+  # We may use across-speaker scaled F1 as a response.
+  mutate(
+    scaled_F1 = scale(F1_50),
+    scaled_F1 = scale(F2_50)
+  )
+```
+
+We now look at the distributions of the key variables.
+
+Our initial models probe the relationship between amplitude and F1. We will use
+both scaled and unscaled F1 values. We first look at the
+unscaled values (Figure \@ref(fig:unscaled-F1-distributions)). Inspection of the
+figure suggests that all are roughly normally distributed, although with quite
+different amounts of variance and moderate differences in their skewness.
+
+``` {r unscaled-F1-distributions, fig.cap = "Distributions of unscaled F1 values for each vowel."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = F1_50
+    )
+  ) +
+  geom_histogram(stat="density") +
+  facet_wrap(vars(Vowel)) +
+  labs(
+    title = "Unscaled F1 Distributions by Vowel"
+  )
+```
+
+Figure \@ref(fig:scaled-F1-distributions) shows the (predictable) consequences
+of scaling these variables. All are now centred around zero and ranging between
+-2.5 and 2.5. This is unsurprising because 
+we filtered out tokens with s.d. filtering
+at -2.5 and 2.5 in  `preprocessing.Rmd`.
+``` {r scaled-F1-distributions, fig.cap = "Distributions of scaled F1 values for each vowel."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_F1
+    )
+  ) +
+  geom_histogram( stat="density") +
+  facet_wrap(vars(Vowel)) +
+  labs(
+    title = "Scaled F1 Distributions by Vowel"
+  )
+```
+
+Our main variable of interest is the maximum amplitude of the word in which the
+vowel token originates. Taking our amplitude values at the _word_ level rather
+than the _vowel token_ level helps us to generate reliable amplitude readings
+using Praat.^[See `preprocessing.Rmd`.] Figure \@ref(fig:amplitude-distribution)
+shows the distribution of maximum amplitude.
+``` {r amplitude-distribution, fig.cap = "Maximum amplitude, scaled and unscaled."}
+(
+  qb_vowels %>%
+    ggplot(
+      aes(
+        x = speaker_scaled_amp_max
+      )
+    ) + 
+    geom_histogram(binwidth=0.1) +
+    labs(
+      title = "Scaled",
+      x = "Scaled max amplitude"
+    )
+) +
+(
+  qb_vowels %>%
+  ggplot(
+    aes(
+      x = intensity_max
+    )
+  ) + 
+  geom_histogram(binwidth=1)+
+  labs(
+    title = "Unscaled",
+    x = "Unscaled max amplitude"
+    )
+) +
+  plot_annotation(
+    title = "Max word amplitude distributions"
+  )
+```
+The automatically generated scale on the $x$-axis in Figure
+\@ref(fig:amplitude-distribution) suggests that we have a few outliers on the
+left tail. We look at these values by filtering for scaled maximum amplitude
+below $-5$.
+
+``` {r}
+qb_vowels %>%
+  filter(
+    speaker_scaled_amp_max < -5
+  ) %>%
+  select( # Remove non-informative variables.
+    -c("MatchId", "TargetId", "URL")
+  )
+```
+Interestingly, almost all of these have no pitch information. This suggests a 
+tracking problem in Praat. We look at how common missing pitch information is
+in the dataframe.
+``` {r}
+qb_vowels %>%
+  filter(
+    is.na(pitch)
+  ) %>%
+  select( # Remove non-informative variables.
+    -c("MatchId", "TargetId", "URL")
+  )
+```
+There are about 100 times more entries with missing pitch than there are
+entries with scaled amplitude < 0.5. We won't delete all of these data points.
+
+Instead, given that the arguments for adopting the 2.5 standard deviation cut
+off for formant values apply to amplitude values just as well. So we will apply
+the same cut off to the amplitude data.
+``` {r}
+qb_vowels <- qb_vowels %>%
+  filter(
+    abs(speaker_scaled_amp_max) <= 2.5
+  )
+```
+
+The resulting distribution for amplitude is depicted in Figure 
+\@ref(fig:filtered-amplitude-distribution). No surprises here.
+``` {r filtered-amplitude-distribution, fig.cap="Filtered and scaled max amplitude distribution."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_amp_max
+    )
+  ) + 
+  geom_histogram(binwidth=0.1) +
+  labs(
+    title = "Max amplitude distribution",
+    subtitle = "Filtered and scaled",
+    x = "Scaled max amplitude"
+  )
+```
+Our models will use articulation rate and pitch as control variables. When we
+use scaled F1 as the response variable, we will also scale these within speaker.
+We now check the distributions of scaled articulation rate and pitch.
+``` {r scaled-pitch-distribution, fig.cap="Across speaker scaled mean pitch distribution."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = scaled_pitch,
+      colour = participant_gender
+    )
+  ) + 
+  geom_freqpoly(binwidth=0.1, size=1, stat='density') +
+  labs(
+    title = "Across-speaker scaled mean pitch distribution",
+    x = "Scaled mean pitch"
+  )
+```
+Figure \@ref(fig:scaled-pitch-distribution) shows that our across speaker
+scaling results in a bimodal distribution with modes mostly corresponding
+to the gender of the speaker. This scaling will only be used to aid the fitting
+process, so we don't need to worry about it. 
+
+Figure \@ref(fig:scaled-pitch-hist) shows the distribution as a histogram of
+raw token counts.
+``` {r scaled-pitch-hist, fig.cap="Histogram of across speaker scaled mean pitch distribution."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = scaled_pitch
+    )
+  ) + 
+  geom_histogram(binwidth=0.1) +
+  labs(
+    title = "Across-speaker scaled mean pitch distribution",
+    x = "Scaled mean pitch"
+  )
+```
+
+Within speaker scaling of pitch does not result in a bimodal distribution (as expected).
+See Figure \@ref(fig:speaker-scaled-pitch-distribution).
+``` {r speaker-scaled-pitch-distribution, fig.cap="Within speaker scaled mean pitch distribution."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_pitch
+    )
+  ) + 
+  geom_histogram(binwidth=0.1) +
+  labs(
+    title = "Within-speaker scaled mean pitch distribution",
+    x = "Scaled mean pitch"
+  )
+```
+
+We also look at articulation rate.
+``` {r scaled-artrate-distribution, fig.cap="Within speaker scaled utterance articulation rate distribution."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_art_rate
+    )
+  ) + 
+  geom_histogram(binwidth=0.1) +
+  labs(
+    title = "Within speaker scaled articulation rate distribution",
+    x = "Scaled utterance articulation rate"
+  )
+```
+
+Both Figure \@ref(fig:speaker-scaled-pitch-distribution), and to a lesser
+extent, Figure \@ref(fig(speaker-scaled-artrate-distribution), show the presence
+of outliers in the distribution. In both cases, and for consistency, we apply
+the 2.5 standard deviation rule.
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  filter(
+    abs(speaker_scaled_art_rate) <= 2.5,
+    abs(speaker_scaled_pitch) <= 2.5
+  )
+```
+
+Some of our models will use a random effect structure to capture the differences
+between speakers. Consequently, we look at the distributions by speaker.
+
+We know that different speakers contribute radically different amounts to the 
+dataset (Figure \@ref(fig:speaker-lengths)).
+``` {r speaker-lengths, fig.cap = "Distribution of speaker monologue lengths."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_length
+    )
+  ) + 
+  geom_histogram(binwidth=100) +
+  labs(
+    title = "Distribution of speaker monologue lengths",
+    x = "Speaker monolgoue length"
+  )
+```
+
+We can look at the distribution of F1s by speaker to see if any stick out as
+having not many tokens and, consequently, extreme looking distributions when
+scaled.
+
+``` {r speaker-F1s, fig.cap = "Speaker F1 distributions for each vowel."}
+large_plot <- qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_F1,
+      colour = Speaker
+    )
+  ) +
+  facet_wrap(vars(Vowel)) +
+  geom_freqpoly(stat="density") +
+  theme(legend.position = "None") +
+  labs(
+    title = "Speaker F1 distributions for each vowel",
+    x = "Scaled F1 value"
+  )
+large_plot
+```
+
+Figure \@ref(fig:speaker-F1s) shows some sharp spikes which suggest a lack of 
+data points for certain speakers for certain vowels. We'll insist on speakers
+having at least five tokens for each vowel.
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker, Vowel) %>%
+  mutate(
+    n_obs = n()
+  ) %>%
+  ungroup() %>%
+  group_by(Speaker) %>%
+  mutate(
+    min_obs = min(n_obs)
+  ) %>%
+  filter(
+    min_obs >= 5
+  )
+```
+
+Figure \@ref(fig:speaker-F1s-filtered) shows the distribution after filtering.
+<span style="font-variant: small-caps;">start</span> still has a speaker with a
+strange distribution, but we have no obvious criterion for removing them.
+``` {r speaker-F1s-filtered, fig.cap = "Speaker F1 distributions for each vowel (filtered)."}
+large_plot <- qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_F1,
+      colour = Speaker
+    )
+  ) +
+  facet_wrap(vars(Vowel)) +
+  geom_freqpoly(stat="density") +
+  theme(legend.position = "None") +
+  labs(
+    title = "Speaker F1 distributions for each vowel",
+    subtitle = "After filtering steps",
+    x = "Scaled F1 value"
+  )
+large_plot
+```
+
+### Amplitude variation
+
+In the paper, we compare the extent of amplitude variation in our data with that
+in laboratory studies. To get a sense how how much variation there is here,
+we produce some plots. First we look at the variation at the speaker level.
+``` {r}
+ranges <- qb_vowels %>%
+  group_by(Speaker) %>%
+  summarise(
+    max_amp = max(intensity_max, na.rm=TRUE),
+    min_amp = min(intensity_max, na.rm=TRUE),
+    range_amp = max_amp - min_amp
+  ) %>%
+  ungroup()
+
+summary(ranges$range_amp)
+
+qb_vowels %>%
+  group_by(Speaker) %>%
+  mutate(
+    intensity_centered = intensity_max - mean(intensity_max, na.rm=TRUE)
+  ) %>%
+  ungroup() %>%
+  ggplot(
+    aes(
+      x = intensity_centered,
+      colour = Speaker,
+      after_stat(density)
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+  labs(
+    title = "Amplitude variation of Each Speaker (Db)",
+  ) +
+  theme(
+    legend.position = "none"
+  )
+  
+
+qb_vowels %>%
+  group_by(Speaker) %>%
+  mutate(
+    intensity_centered = intensity_max - mean(intensity_max, na.rm=TRUE)
+  ) %>%
+  ungroup() %>%
+  ggplot(
+    aes(
+      x = intensity_centered,
+      after_stat(density)
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+  labs(
+    title = "Amplitude Variation in Data (Db)"
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+And then the amount of variation at the 60 second interval level.
+``` {r}
+# Now degree of amplitude variation across 60 second intervals.
+
+intervals <-  qb_vowels %>%
+    # Divide up the time variable into 60 second and 240 second intervals.
+    group_by(Speaker) %>%
+    mutate(
+      interval_60 = as.numeric(
+        as.factor(
+          cut(
+            time, 
+            breaks = seq(0, max(time) + 60, 60))
+        )
+      )*60
+    ) %>%
+    # Trim terminal intervals with insufficient data. Replaces bad interval values with NA.
+    # note: still grouped by Speaker
+    mutate(
+      speaker_length = max(time),
+      remaining_from_start_60 = speaker_length - (interval_60 - 60),
+      interval_60 = if_else(remaining_from_start_60 >= 45, interval_60, NA_real_),
+    ) %>%
+    ## Create centered intensity
+    mutate(
+      intensity_centered = intensity_max - mean(intensity_max, na.rm=TRUE)
+    ) %>%
+    ungroup() %>%
+    # Take summary value for formants for 60s intervals.
+    group_by(Speaker, interval_60) %>%
+    mutate(
+      centered_amp_60 = mean(intensity_centered, na.rm=TRUE)
+    ) %>%
+    ungroup()
+
+intervals %>%
+  group_by(Speaker, interval_60) %>%
+  summarise(
+    centered_amp_60 = first(centered_amp_60)
+  ) %>%
+  ungroup() %>%
+  ggplot(
+    aes(
+      x = centered_amp_60,
+      after_stat(density)
+    )
+  ) +
+  geom_freqpoly(binwidth=1) +
+  theme(
+    legend.position = "none"
+  )
+
+intervals %>%
+  group_by(Speaker) %>%
+  summarise(
+    max_amp = max(centered_amp_60, na.rm=TRUE),
+    min_amp = min(centered_amp_60, na.rm=TRUE),
+    speaker_range = max_amp-min_amp
+  ) %>%
+  pull(speaker_range) %>%
+  summary()
+
+
+```
+
+### Initial look at changes in F1 and amplitude over monologues
+
+Before modelling, we want some visual sense of shifts over time in the data.
+
+``` {r f1-time, fig.cap = "Changes in F1 over course of monologue."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_time,
+      y = speaker_scaled_F1
+    )
+  ) +
+  geom_smooth() +
+  facet_wrap(vars(Vowel)) +
+  labs(
+    title = "Changes in F1 over course of monologue",
+    x = "Time (scaled)",
+    y = "F1 (scaled)"
+  )
+```
+We have some evidence in Figure \@ref(fig:f1-time) for a decrease in F1 for 
+<span style="font-variant: small-caps;">dress, fleece, foot, lot, nurse, strut, thought,</span> and 
+<span style="font-variant: small-caps;">trap</span>. This may, in turn,
+be explained by changes in amplitude. Figure \@ref(fig:amp-time). shows the
+relationship of amplitude to (scaled) time. We see a small decrease in amplitude
+over the course of the monologue.
+
+``` {r amp-time, fig.cap="Change in amplitude over course of monologue."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_time,
+      y = speaker_scaled_amp_max
+    )
+  ) +
+  geom_smooth() +
+  labs(
+    title = "Change in amplitude over course of monologue",
+    x = "Time (scaled)",
+    y = "Maximum word amplitude (scaled)"
+  )
+```
+One final thing to look at here is whether this apparent effect is there for
+speakers of different lengths. We cut speaker lengths in to 0-10m, 10-20m, and
+20+m.
+``` {r}
+qb_vowels <- qb_vowels %>%
+  ungroup() %>%
+  mutate(
+    speaker_length_fact = cut(
+      speaker_length,
+      breaks = c(0, 600, 1200, max(speaker_length)),
+      labels = c("short (-10m)", "medium (10-20m)", "long (20m+)")
+    ),
+    speaker_length_fact = fct_relevel(
+      speaker_length_fact,
+      c("short (-10m)", "medium (10-20m)", "long (20m+)")
+    )
+  )
+```
+
+We look at the number of speakers in each category.
+``` {r}
+qb_vowels %>%
+  group_by(speaker_length_fact) %>%
+  summarise(
+    n = n_distinct(Speaker)
+  )
+```
+There are no categories with radically low numbers of speakers.
+
+Figure \@ref(fig:amp-speaker-length)
+``` {r amp-speaker-length, fig.cap = "Changes in amplitude over time by speaker length."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_time,
+      y = speaker_scaled_amp_max,
+      colour = speaker_length_fact
+    )
+  ) +
+  geom_smooth() +
+  labs(
+    title = "Changes in amplitude over time by speaker length",
+    colour = "Speaker length",
+    x = "Time (scaled)",
+    y = "Max word amplitude (scaled)"
+  )
+```
+All seem to be dropping at the end of the monologue. All seem to cross the
+overall mean amplitude some time after half way and have a quite precipitous
+drop at the end.
+
+``` {r pitch-monologue, fig.cap = "Change in pitch over the course of monologue."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_time,
+      y = speaker_scaled_pitch
+    )
+  ) +
+  geom_smooth() +
+  labs(
+    title = "Pitch over the course of monologue.",
+    y = "Pitch (scaled)",
+    x = "Time (scaled)"
+  )
+```
+We also see a decline in pitch over the course of monologues (Figure
+\@ref(fig:pitch-monologue)).
+
+## Linear (Mixed) Models
+
+### Linear models
+
+We start with some straightforward linear models. First, we use position in the
+monologue as our predictor.
+
+``` {r}
+linear.fit <- lm(speaker_scaled_F1 ~ speaker_scaled_time, data=qb_vowels)
+
+summary(linear.fit)
+```
+A simple model with scaled time as predictor strongly indicates a reduction in
+F1 over time. However, with an adjusted R-squared of 0.00059, this model
+explains almost none of the variation in F1 in the dataset.
+
+We will get a little bit more sophisticated before engaging in model
+diagnostics.
+``` {r}
+linear.fit.2 <- lm(
+  speaker_scaled_F1 ~ 
+    speaker_scaled_time*scaled_length + 
+    speaker_scaled_art_rate + 
+    speaker_scaled_amp_max + 
+    speaker_scaled_pitch, 
+  data=qb_vowels
+)
+summary(linear.fit.2)
+```
+Our second model includes the across-speaker scaled length of the speaker and
+interacts it with time scaled. The idea here is that longer speakers may
+exhibit a more extreme effect of time on their F1, particularly if fatigue is
+part of the story. We also include articulation rate and amplitude taken at
+midpoint.
+
+The largest factor here is, by a multiple of 10, amplitude. Scaled time, by
+itself, is not significant, but the interaction with speaker length does have an
+effect. This is not surprising, insofar as this is a continuous by continuous
+interaction where the baseline is a speaker length of 0. The effect of scaled
+time in reducing F1 seems to increase as speakers increase in length. The
+articulation rate term suggests that as articulation rate increases, the F1 will
+decrease, and similar for the pitch.
+
+This model moves us from an R squared of 0.00059 to 0.019. This is a major 
+increase in descriptive power.
+
+We check the diagnostic plots.
+``` {r}
+plot(linear.fit.2)
+```
+There is no extreme departure from normality of residuals and no data points
+with excessive leverage. In the tails, the error distribution is not entirely
+normal, but is within acceptable limits.
+
+It is easier to interpret a speaker length factor than the 
+continuous by continuous interaction, so we refit the model.
+``` {r}
+linear.fit.2.fact <- lm(
+  scaled_F1 ~ 
+    speaker_scaled_time*speaker_length_fact + 
+    speaker_scaled_art_rate + 
+    speaker_scaled_amp_max + 
+    speaker_scaled_pitch, 
+  data=qb_vowels
+)
+summary(linear.fit.2.fact)
+```
+We see that longer speakers have a stronger time scaled effect than shorter
+speakers. We also see that amplitude remains a major factor. There is no
+evidence here for an effect of F1 drop over time distinct from the drop in
+amplitude for all but the longest speakers.
+
+Before incorporating by-speaker random effects, it is worth looking at models
+for each vowel to determine whether the same predictors come out as significant.
+We do this by using the `purrr` method of nesting, fitting a model to each
+nested dataframe, and extracting model summary information.
+``` {r}
+vowel_linear_models <- qb_vowels %>%
+  
+  # Group by vowel and nest to create a column of dataframes corresponding
+  # to each vowel.
+  group_by(Vowel) %>%
+  nest() %>%
+  
+  # Apply the linear model (same structure as linear.fit.2)
+  mutate(
+    model = map(
+      data, 
+      ~ lm(speaker_scaled_F1 ~ 
+             speaker_scaled_time*scaled_length + 
+             speaker_scaled_art_rate + 
+             speaker_scaled_amp_max +
+             speaker_scaled_pitch, 
+           data = .x)
+    ),
+    
+    # Extract the coefficients for each variable
+    coefficients = map(model, tidy),
+    
+    # List the variables with p-values less than or equal to 0.05.
+    significant_variables = map(coefficients, ~ .x %>% filter(p.value <= 0.05))
+    
+  ) %>%
+  
+  # Select the significant variables and 'unnest' so that each vowel has a row
+  # for each significant variable.
+  select(
+    Vowel, significant_variables
+  ) %>%
+  unnest(significant_variables)
+```
+
+We then output the models where `speaker_scaled_time` or the interaction
+`speaker_scaled_time:scaled_length` come out as statistically significant at
+the 0.05 level.
+``` {r}
+# Output the models where scaled_time or the interaction with speaker
+# length is significant.
+vowel_linear_models %>%
+  filter(
+    term %in% c("speaker_scaled_time", "speaker_scaled_time:scaled_length")
+  )
+```
+The models for <span style="font-variant: small-caps;">kit, trap, and nurse,
+thought,</span> and <span style="font-variant: small-caps;">lot</span> suggest
+that something is happening with scaled_time distinct from changes in amplitude.
+This is particularly interesting given that both <span style="font-variant:
+small-caps;">kit</span> and <span style="font-variant: small-caps;">start</span>
+show almost no movement in average F1 over time (Figure \@ref(fig:f1-time)).
+
+We now output all the models where `scaled_amp_max` appears as a significant
+predictor.
+``` {r}
+vowel_linear_models %>%
+  filter(term == "speaker_scaled_amp_max")
+```
+Amplitude is taken to be a significant predictor by all vowels. Note also, that
+the effect is in the same direction for each, with <span style="font-variant:
+small-caps;">lot</span> and <span style="font-variant: small-caps;">strut</span>
+having the strongest effects by magnitude.
+
+``` {r}
+vowel_linear_models %>%
+  filter(term == "speaker_scaled_pitch")
+```
+The pitch seems to also be associated with F1 for <span style="font-variant:
+small-caps;">dress, nurse, kit, strut, lot,</span> and <span
+style="font-variant: small-caps;">foot</span>, with the strongest effect for
+<span style="font-variant: small-caps;">strut</span>.
+
+Finally, we look at articulation rate:
+``` {r}
+vowel_linear_models %>%
+  filter(term == "speaker_scaled_art_rate")
+```
+This predictor is taken to be significant for eight monophthongs. But note that
+the direction of the effect is different for <span style="font-variant:
+small-caps;">goose</span> and <span style="font-variant:
+small-caps;">thought</span>. This is consistent with a decreased vowel space
+when articulation rate is high (with <span style="font-variant:
+small-caps;">goose</span> and <span style="font-variant:
+small-caps;">thought</span> lowering while the other vowels rise.
+
+### Linear mixed models
+
+We now move to linear models which incorporate random effects structures. This
+allows us to capture the fact that our data comes from different speakers who,
+we may assume, are drawn from a roughly normal distribution of possible
+speakers.
+
+The linear models suggests that there is variation in the effects of our 
+predictors by each vowel. Vowel levels are _repeatable_, so we do not include
+them as random effects. We only include _speaker_ as a random effect.
+
+We model using raw F1 frequency, as this makes the differences between the 
+vowels easier for the model to detect. We will use random intercepts for 
+each speaker-vowel combination.
+
+**NB:** to refit this model yourself, change `eval` to `TRUE` in the following code
+chunk options.
+``` {r eval = FALSE}
+lmer_fit <- lmer(
+  F1_50 ~ 
+    Vowel + 
+    speaker_scaled_time * scaled_length +
+    speaker_scaled_amp_max * Vowel +
+    speaker_scaled_art_rate * Vowel +
+    speaker_scaled_pitch * Vowel +
+    participant_gender + 
+    (1 + Vowel|Speaker), 
+  data = qb_vowels)
+
+# save model
+write_rds(lmer_fit, here('models', 'lmer_fit.rds'))
+```
+
+We load a model we have already fit (or, if the previous cell has been run,
+the model which has just been saved).
+
+```{r load-lmer-model}
+# load model
+lmer_fit <- read_rds(here('models', 'lmer_fit.rds'))
+```
+
+The easiest way to look at the model effects is to look at the output of the
+`anova` function. This outputs test values for variable terms rather than for
+each individual level of our `Vowel` factor.
+
+```{r}
+anova(lmer_fit)
+```
+The majority of the variation handled by the model's fixed effects comes from
+the different vowels. The F value column  suggests that amplitude, scaled by
+speaker, is significant. It, and the interaction with `Vowel` explain a very 
+large proportion of the variation in the data which is explained by the model.
+
+We can also look at the detailed output. 
+``` {r}
+summary(lmer_fit)
+```
+Note that model's convergence is somewhat higher (0.0042) than the default
+tolerance (0.002), but is reasonably close. As this isn't the main model we will
+use in the paper, we will not engage in any further attempts to get convergence
+within the threshold.
+
+Breaking up the results by vowel reveals some important patterns. In particular,
+we see that <span style="font-variant: small-caps;">lot</span> and <span
+style="font-variant: small-caps;">strut</span> dominate when we look at the
+`scaled_amp_max` effect. The effect of `scaled_amp_max` on F1 is positive apart
+from the very low magnitude negative coefficient for START.
+
+We check the diagnostic plots, as above.
+``` {r}
+qqnorm(resid(lmer_fit))
+qqline(resid(lmer_fit))
+```
+The model is struggling at the tails. This may be corrected by allowing for
+non-linear relationships when we turn to GAMMs.
+
+``` {r}
+plot(lmer_fit)
+```
+
+We know that amplitude, pitch, and articulation rate have relationships to one
+another. But are these causing problems for our estimated coefficients. We
+look at the variance inflation factor.
+``` {r}
+vif(lmer_fit)
+```
+A GVIF above 2.24 represents some multicollinearity, a GVIF above 3.16 indicates
+high colinearity. The variance inflation here may come from the correlation
+between amplitude and pitch (`r cor(qb_vowels$speaker_scaled_amp_max, qb_vowels$scaled_pitch)`).
+Since the GVIF is not extreme, we will leave all variable in.
+
+We can now plot the amplitude and F1 relationship for each vowel according 
+for the generalised linear model.
+
+``` {r f1-amp-vowel, fig.cap = "Relationship between F1 and amplitude by vowel."}
+# Define new data to generate model predictions
+new_data <- tibble(
+  speaker_scaled_pitch = 0,
+  speaker_scaled_art_rate = 0,
+  scaled_length = 0,
+  Vowel = rep(vowels, each = 1000),
+  participant_gender = "F",
+  # Assuming we are in the middle of the monologue
+  speaker_scaled_time = 0.5,
+  speaker_scaled_amp_max = rep(seq(-3, 3, length.out = 1000), times=11)
+)
+
+new_data <- new_data %>%
+  mutate(
+    prediction = predict(lmer_fit, newdata=new_data, re.form=NA),
+  )
+
+new_data %>%
+  ggplot(
+    aes(
+      x = speaker_scaled_amp_max,
+      y = prediction, 
+      colour = Vowel
+    )
+  ) +
+  geom_line() +
+  labs(
+    title = "F1 and Amplitude by Vowel",
+    subtitle = glue(
+      "Prediction, controlling for speaker gender, length, time, articulation rate,",
+      "and pitch"
+    ),
+    colour = "Speaker length",
+    y = "Predicted F1 (hz)",
+    x = "Maximum amplitude (scaled)"
+  ) +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  )
+```
+
+Figure \@ref(fig:f1-amp-vowel) shows predicted F1 values for different vowels at
+different maximum amplitudes. We see that the effect, measured in terms of raw
+frequency is very large for <span style="font-variant: small-caps;">strut</span>
+and <span style="font-variant: small-caps;">lot</span>. What is also interesting
+is that we see some overlap between vowels, so that, for instance, at low
+amplitude LOT has a lower F1 than <span style="font-variant:
+small-caps;">trap</span>, but at moderate to high volumes <span
+style="font-variant: small-caps;">trap</span> has a lower F1 than LOT. It also
+appears that, at as the amplitude increases, the F1 values of <span
+style="font-variant: small-caps;">goose</span> and <span style="font-variant:
+small-caps;">fleece</span> will get closer and closer together. At low
+amplitude, the F1 value of <span style="font-variant: small-caps;">thought,
+nurse, fleece</span> and <span style="font-variant: small-caps;">dress</span>
+coincide, but become distinguished from each other at higher amplitudes. On the
+other hand, at low amplitudes we find GOOSE more distinguished in height from
+the other high vowels, but coinciding with <span style="font-variant:
+small-caps;">fleece</span> at high amplitudes.
+
+## Generalised Additive Mixed Models
+
+We now turn to GAMMs, a more flexible approach to modelling which is
+particularly effective at capturing non-linear relationships. The failure to
+handle tails of our error distribution with linear mixed models suggests that
+we might benefit from allowing non-linearities in to our models.
+
+First, we fix the representation of the data for the `mgcv` package, which 
+requires factors to be represented as such rather than interpreting character
+vectors as factors.
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  mutate(
+    Vowel = as.factor(Vowel),
+    Speaker = as.factor(Speaker),
+    participant_gender = as.factor(participant_gender)
+  )
+```
+
+We begin by exploring structures using fREML to fit our models. We then use
+ML in order to carry out model-comparison based significance testing. The 
+full model we fit using ML is the model from which we generate the effect plots
+in the paper.
+
+We are not performing significance tests for distinctions between vowels, so
+we do not fit difference smooths (as in 
+[Sókuthy](https://arxiv.org/abs/1703.05339)).
+
+### fREML Models
+
+We fit a series of models here using fREML. These can be fit quickly, however,
+they are not suitable for model comparison-based testing when fixed effects
+are varied 
+([Sóskuthy 2021](https://www.sciencedirect.com/science/article/pii/S009544702030108X), 8). 
+In order to do this, we will fit a series of models with ML. These will take
+much longer to fit.
+
+Our first structure is used in the main paper for vowel space visualisations in
+which the effect of amplitude and articulation rate are compared.
+
+Our second structure, which adds random smooths over the time variable for
+each speaker, is given as part of the process we carried out to explore
+potential model structures. It is not used in the main paper. We did not
+find that it significantly improved performance for the added model complexity.
+
+Our third structure explores the possibility of fitting the model using a scaled
+t-distribution as our error model rather than a Gaussian. This _is_ found to 
+improve the behaviour of our residuals, but it does not significantly affect 
+the interpretation of our results. Moreover, attempts to fit the model with
+scaled t residuals were unsuccessful with ML due to limitations in computational
+power.
+
+#### Structure 1: by-speaker and by-speaker-by-vowel, intercepts.
+
+We begin by following the same structure as the previous mixed model.
+
+**NB:** to refit this model yourself, change `eval` to `TRUE` in the following code
+chunk options.
+``` {r eval=FALSE}
+gamm_fit <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="fREML",
+  discrete = TRUE,
+  nthreads = 8 
+)
+
+write_rds(gamm_fit, here('models', 'gamm_fit_s1.rds'))
+
+# Also takes a long time to calculate summary.
+# We calculate it and save it now.
+gamm_fit_summary <- summary(gamm_fit)
+write_rds(gamm_fit_summary, here('models', 'gamm_fit_s1_summary.rds'))
+```
+
+We load the pre-calculated/fit model and summary.
+``` {r}
+gamm_fit <- read_rds(here('models', 'gamm_fit_s1.rds'))
+gamm_fit_summary <- read_rds(here('models', 'gamm_fit_s1_summary.rds'))
+gamm_fit_summary
+```
+The summary output here has a great deal of detail. We will focus in on specific
+aspects of the model as we go. At this point, it is worth noting that _all_ of
+the terms here are significant, at least for one level of our `Vowel` factor.
+The model here first a smooth for each of our predictors and then enables a
+difference from this smooth for each vowel.
+
+We will look at amplitude first, as it is our main variable of interest. The
+code below can be modified to get and plot predictions for the other variables.
+``` {r plot-gamm-1-gg, fig.dim = c(7, 10), fig.cap="F1 and amplitude by vowel."}
+gamm_fit_preds <- get_predictions( 
+  gamm_fit,
+  cond = list(
+    'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+gamm_fit_preds %>%
+  mutate(# Enable plot to distinguish between high and low vowels (for faceting)
+    height = if_else(Vowel %in% high_vowels, "high", "low or mid"),
+    Vowel = factor(Vowel, levels = vowels)
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_amp_max,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.3,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Amplitude by Vowel",
+    x = "Scaled amplitude",
+    y = "F1"
+  )
+  # facet_wrap(
+  #   facets=vars(height), scales = "free"
+  # )
+```
+
+Figure \@ref(fig:plot-gamm-1-gg) looks very similar to Figure
+\@ref(fig:f1-amp-vowel). We have the crossing of 
+<span style="font-variant: small-caps;">lot</span> and 
+<span style="font-variant: small-caps;">trap</span>, for instance, 
+and, broadly speaking, increased F1 with increased relative amplitude.
+
+We now run diagnostic checks on the model:
+``` {r, echo=FALSE,results='hide',fig.keep='all',fig.cap='GAM model checks.'}
+gam.check(gamm_fit)
+```
+
+A few things are worth noting here. First, we don't have any indication that
+we have our $k$ values set too low. The check for this can be found at the bottom
+of the text output of `gam.check` above, where we need both an `edf` value close
+to `k'` and a p-value less than 1. This is not the case for any of our variables.
+NB: $k$ can be thought of as an upper limit on 'wiggliness'. If `k` is too low,
+then we are not giving the GAM enough freedom to fit the true relationship.
+
+The QQ plot again suggests that we are struggling at the tails of our
+distribution of residuals. This is not particularly worrying, although we will 
+investigate an alternative model for our residuals below (scaled-t rather than
+Gaussian). The response vs. fitted variables plot looks fine. As expected, 
+given the QQ plot, the histogram of residuals has quite heavy tails.
+
+An important factor in gamm modelling is to ensure that the model specification
+enables sufficient 'wiggliness'. An indication that this is not the case is that
+estimated degrees of freedom values are close to the 'k' value. All of our 
+smooths take the default number of knows (`k=10`). We look at the text output
+of `gam.check` to ensure that the estimated degrees of freedom are lower than
+our `k` value. This is indeed the case.
+
+Note the absence of autocorrelation in the model residuals (Figure \@ref(fig:auto-corr)).
+```{r auto-corr, fig.cap = "Autocorrelation in model residuals."}
+acf_resid(gamm_fit, split_pred = 'Speaker')
+```
+
+We will take this to apply to the other models of the data we fit.
+
+#### Structure 2: By-speaker smooths
+
+We can also set up a model with by-speaker random smooths. This takes a *very*
+long time to run. By-speaker smooths are preferable in so far as they enable
+the model to more accurately capture how much independent information we have.
+Our previous model structure does not understand our datapoints as occurring
+within an ongoing monologue for a particular speaker. 
+
+**NB:** to refit this model yourself, change `eval` to `TRUE` in the following code
+chunk options.
+``` {r, eval=FALSE}
+gamm_fit_by_speaker <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by = Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(speaker_scaled_time, Speaker, bs="fs", k=5, m=1) + #k=5 to reduce load.
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="fREML",
+  discrete = TRUE,
+  nthreads = 8
+)
+
+write_rds(gamm_fit_by_speaker, here('models', 'gamm_fit_by_speaker.rds'))
+
+# We again calculate and save the summary.
+gamm_fit_by_speaker_summary <- summary(gamm_fit_by_speaker)
+write_rds(
+  gamm_fit_by_speaker_summary, 
+  here('models', 'gamm_fit_by_speaker_summary.rds')
+)
+```
+
+This cell loads a previously generated version of the model.
+``` {r}
+gamm_fit_by_speaker <- read_rds(here('models', 'gamm_fit_by_speaker.rds'))
+gamm_fit_by_speaker_summary <- read_rds(
+  here('models', 'gamm_fit_by_speaker_summary.rds')
+)
+gamm_fit_by_speaker_summary
+```
+
+We again visualise:
+``` {r plot-gamm-2-gg, fig.dim = c(7, 10), fig.cap="F1 and amplitude by vowel with by by-speaker smooths over time."}
+gamm_fit_preds_by_speaker <- get_predictions(
+  gamm_fit_by_speaker,
+  cond = list(
+    'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+gamm_fit_preds_by_speaker %>%
+  mutate(# Enable plot to distinguish between high and low vowels (for faceting)
+    height = if_else(Vowel %in% high_vowels, "high", "low or mid")
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_amp_max,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.3,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Amplitude by Vowel (by Speaker Smooths Over Time)",
+    x = "Scaled amplitude",
+    y = "F1"
+  )
+  # facet_wrap(
+  #   facets=vars(height), scales = "free"
+  # )
+```
+
+We again run model diagnostics:
+``` {r}
+gam.check(gamm_fit_by_speaker)
+```
+
+No great gain is achieved here. The model output is remarkably similar for 
+our main variable on interest (amplitude). Whatever improvement we might
+be getting is undermined by the increased computational cost.
+
+#### Structure 3: Scaled-T Residuals
+
+The QQ-plots and residual histograms for the previous two structures show that
+our residuals do not exactly follow a normal distribution. They have heavy 
+tails. One way to handle heavy tailed distributions of residuals is to fit a 
+model which does not assume the normality of the residuals. One such distribution
+is the scaled-t distribution ([Sóskuthy 2021, 20](https://www.sciencedirect.com/science/article/pii/S009544702030108X)).
+However, fitting with a scaled t distribution (using `family = scat(link='identity')`)
+increased the computational resource demands of the model.
+
+``` {r eval=FALSE}
+gamm_fit_scat <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="fREML",
+  discrete = TRUE,
+  family = scat(link='identity'),
+  nthreads = 8 # Change this depending on number of cores available.
+)
+
+write_rds(gamm_fit_scat, here('models', 'gamm_fit_scat.rds'))
+
+# calculate summary and save.
+gamm_fit_scat_summary <- summary(gamm_fit_scat)
+write_rds(gamm_fit_scat_summary, here('models', 'gamm_fit_scat_summary.rds'))
+```
+
+We look at the model summary.
+``` {r}
+gamm_fit_scat <- read_rds(here('models', 'gamm_fit_scat.rds'))
+gamm_fit_scat_summary <- read_rds(here('models', 'gamm_fit_scat_summary.rds'))
+gamm_fit_scat_summary
+```
+There are no obvious _systematic_ differences in the model output. It explains
+somewhat less deviance, but this is not a cause for concern if the model still
+carries the main effects we are interested in and fits the data better. 
+
+With the t-distribution, quite a bit more is required in terms of degrees of
+freedom to capture the vowel space of each speaker (see `s(Speaker)` and
+`s(Vowel, Speaker)`). 
+
+The same items seem to appear as significant in our list of smooth terms as in
+Structure 1. If anything, there is a tendency for this model to indicate a 
+higher degree of significance to these terms.
+
+We will look at amplitude first, as it is our main variable of interest. 
+``` {r plot-gamm-1-gg-scat, fig.dim = c(7, 10), fig.cap="F1 and amplitude by vowel, scaled T model."}
+gamm_fit_preds <- get_predictions(
+  gamm_fit_scat,
+  cond = list(
+    'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+gamm_fit_preds %>%
+  mutate(# Enable plot to distinguish between high and low vowels (for faceting)
+    height = if_else(Vowel %in% high_vowels, "high", "low or mid")
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_amp_max,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.3,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Amplitude by Vowel",
+    x = "Scaled amplitude",
+    y = "F1"
+  )
+  # facet_wrap(
+  #   facets=vars(height), scales = "free"
+  # )
+```
+
+Figure \@ref(fig:plot-gamm-1-gg-scat) Is similar to the previous plots of the
+same sort. Again, 
+<span style="font-variant: small-caps;">lot</span> and 
+<span style="font-variant: small-caps;">trap</span>, seem to merge rather than
+cross. We will keep this in mind in interpreting the effect of amplitude on 
+the vowel space as a whole.
+
+We now run diagnostic checks on the model:
+``` {r, echo=FALSE,results='hide',fig.keep='all',fig.cap='GAM model checks.'}
+gam.check(gamm_fit_scat)
+```
+
+The text output again shows that our choice of `k` is fine.
+
+The QQ plot and histogram of residuals suggest that the performance of our 
+residuals is superior.
+
+
+### ML models and significance tests by model comparison.
+
+The above models are fit with `fREML`. The resulting p-values are not
+necessarily reliable. We use `ML` and the model comparison based significance
+test recommended by [Sóskuthy (2017)](https://arxiv.org/abs/1703.05339).
+
+We refit models using ML to perform significance testing by model comparison.
+This takes a long time to fit (around 40-50 minutes for each model).
+
+We use structure 1, the model structure with random intercepts by speaker and by
+speaker, by vowel. The random intercept structure can be thought of as
+calibrating the model for the overall vowel space of each speaker. While
+the previous section showed good evidence that a scaled t distribution would
+be superior for our residuals, attempts to fit scaled t models using `ML` were
+unsuccessful due to limitations of both time and memory.
+
+``` {r, eval=FALSE}
+gamm_fit_full <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="ML"
+)
+write_rds(gamm_fit_full, here('models', 'gamm_fit_full.rds'))
+
+# We will look at the summary for the full model to check that it doesn't
+# radically differ from the fREML model Structure 1.
+gamm_fit_full_summary <- summary(gamm_fit_full)
+write_rds(gamm_fit_full_summary, here('models', 'gamm_fit_full_summary.rds'))
+
+gamm_fit_no_time <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="ML"
+)
+write_rds(gamm_fit_no_time, here('models', 'gamm_fit_no_time.rds'))
+
+gamm_fit_no_art <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="ML"
+)
+write_rds(gamm_fit_no_art, here('models', 'gamm_fit_no_art.rds'))
+
+gamm_fit_no_amp <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="ML"
+)
+write_rds(gamm_fit_no_amp, here('models', 'gamm_fit_no_amp.rds'))
+
+gamm_fit_no_pitch <- bam(
+  F1_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) +
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="ML"
+)
+write_rds(gamm_fit_no_pitch, here('models', 'gamm_fit_no_pitch.rds'))
+```
+
+We generate p-values for each of the variables using model comparison.
+``` {r}
+gamm_fit_full <- read_rds(here('models', 'gamm_fit_full.rds'))
+gamm_fit_full_summary <- read_rds(here('models', 'gamm_fit_full_summary.rds'))
+
+# time.
+gamm_fit_no_time <- read_rds(here('models', 'gamm_fit_no_time.rds'))
+compareML(gamm_fit_full, gamm_fit_no_time)
+
+# articulation rate.
+gamm_fit_no_art <- read_rds(here('models', 'gamm_fit_no_art.rds'))
+compareML(gamm_fit_full, gamm_fit_no_art)
+
+# amplitude.
+gamm_fit_no_amp <- read_rds(here('models', 'gamm_fit_no_amp.rds'))
+compareML(gamm_fit_full, gamm_fit_no_amp)
+
+# pitch
+gamm_fit_no_pitch <- read_rds(here('models', 'gamm_fit_no_pitch.rds'))
+compareML(gamm_fit_full, gamm_fit_no_pitch)
+```
+
+The four tables above present the contribution of each of our variables to the
+model. Adding new variables will always result in a better fit to the data. The
+question is whether the increase in model complexity is worth it for the 
+increase in information about our variable of pseudointerest. For, for instance,
+our time variable requires, in effect, around 22 additional parameters over the
+model without time. The information given here is taken by the $\Chi^2$ test 
+to be significant.
+
+The same is true for our other variable. Note that the `Difference` column can
+be used to estimate the respective magnitude of the contribution of each
+variable, with amplitude providing the most information for the cost in degrees
+of freedom, and time providing the least.
+
+#### Effect plots from full ML model
+
+We use the model fit with ML to generate plots of our model predictions
+for each vowel and for each of our main fixed variables.
+
+We first define a function to plot predictions from the models and to 
+thereby reduce repetition of code.
+``` {r}
+all_vowel_plot <- function(predictions, xvar, xlabel, plot_title) {
+  
+  xvar <- enquo(xvar)
+  
+  predictions %>%
+    mutate(# Enable plot to distinguish between high and low vowels (for faceting)
+      height = if_else(Vowel %in% high_vowels, "high", "low or mid")
+    ) %>%
+    ggplot(
+      aes(
+        y = fit,
+        x = !!xvar,
+        colour = Vowel
+      )
+    ) + 
+    geom_ribbon(
+      aes(
+        ymin = fit - CI,
+        ymax = fit + CI,
+        fill = Vowel
+      ),
+      alpha = 0.3,
+      colour = NA
+    ) +
+    geom_line() +
+    scale_colour_manual(
+      values = vowel_colours_with_foot
+    ) +
+    scale_fill_manual(
+      values = vowel_colours_with_foot
+    ) +
+    labs(
+      title = plot_title,
+      x = xlabel,
+      y = "F1"
+    )
+    # facet_wrap(
+    #   facets=vars(height), scales = "free"
+    # )
+}
+```
+
+
+The following figure is Figure 3 in the paper.
+``` {r gamm-full-amp-plot, fig.cap = "F1 and amplitude by vowel, ML model."}
+gamm_fit_preds <- get_predictions(
+  gamm_fit_full,
+  cond = list(
+    'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+figure_3 <- all_vowel_plot(
+  gamm_fit_preds, 
+  speaker_scaled_amp_max, 
+  "Scaled amplitude", 
+  "F1 and Amplitude by Vowel"
+)
+
+ggsave(
+  here('plots', 'figure_3.png'),
+  plot = figure_3,
+  dpi = 500,
+  units = "cm",
+  width = 20,
+  height = 12.5
+)
+
+figure_3
+```
+Figure \@red(fig:gamm-full-amp-plot) shows strong evidence for increases in F1
+accompanying increases in amplitude. This effect is stronger for some vowels
+than for others. The estimates for 
+<span style="font-variant: small-caps">lot</span> and 
+<span style="font-variant: small-caps">trap</span> cross one another as
+amplitude increases. We also see that
+some clusters of vowels are distinguishable in F1 at some amplitudes and not at
+others.  These effects are concerning because they would lead an analyst to
+reach different conclusions about the configuration of the vowel space at higher
+versus lower amplitudes.
+
+``` {r gamm-full-art-plot, fig.cap = "F1 and articulation rate by vowel."}
+gamm_fit_preds <- get_predictions(
+  gamm_fit_full,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = seq(-2.5, 2.5, length.out=200),
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot(gamm_fit_preds, speaker_scaled_art_rate, "Scaled articulation rate", "F1 and Articulation Rate by Vowel")
+```
+In Figure \@ref(fig:gamm-full-art-plot) the main thing we are capturing seems to be a reduction in vowel space,
+with 
+<span style = "font-variant: small-caps;">thought</span>
+and
+<span style = "font-variant: small-caps;">goose</span>
+moving in the opposite direction to the other vowels.
+That is, we have contraction occurring at higher rates of speech. Note that the
+magnitude of this effect is much smaller than that of amplitude 
+(Figure \@ref(fig:gamm_full_amp_plot)).
+
+``` {r gamm-full-pitch-plot, fig.cap = "F1 and pitch by vowel."}
+gamm_fit_preds <- get_predictions(
+  gamm_fit_full,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = seq(-2.5, 2.5, length.out=200),
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot(gamm_fit_preds, speaker_scaled_pitch, "Scaled pitch", "F1 and Pitch by Vowel")
+```
+There is an interesting U shaped curve for many vowels when we look at pitch.
+
+``` {r gamm-full-time-plot, fig.cap = "F1 and time by vowel."}
+gamm_fit_preds <- get_predictions(
+  gamm_fit_full,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = seq(0, 1, length.out=200),
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot(gamm_fit_preds, speaker_scaled_time, "Scaled time", "F1 and Time by Vowel")
+```
+It is very hard to take this plot as presenting any good evidence for an effect
+of time through a monologue and F1. Certainly, it is the variable our models
+are least confident about. If anything, there is a small effect where
+<span style="font-variant: small-caps;">lot</span> and
+<span style="font-variant: small-caps;">trap</span> reducing over the course
+of the monologue and 
+<span style="font-variant: small-caps;">kit</span> increasing.
+
+We now look at our GAMM diagnostics.
+``` {r}
+gam.check(gamm_fit_full)
+```
+
+All basically equivalent to our fREML model (Structure 1) as presented above.
+
+``` {r}
+gamm_fit_full_summary
+```
+The summary values are also roughly equivalent. 
+
+### Each vowel models
+
+We now fit GAMM models to the data from each vowel independently to see if 
+this has any effect of our conclusions. For these modules, it is computationally
+feasible to fit with random smooths for each speaker.
+
+Again, we set this block to not evaluate and load precalculated results in the
+following cell.
+``` {r, eval = FALSE}
+vowel_gam_models <- qb_vowels %>%
+  
+  # Group by vowel and nest to create a column of dataframes corresponding
+  # to each vowel.
+  group_by(Vowel) %>%
+  nest() %>%
+  
+  # Apply gam model.
+  mutate(
+    model = map(
+      data, 
+      ~ bam(
+        F1_50 ~ 
+          participant_gender +
+          s(speaker_scaled_time) + 
+          s(speaker_scaled_art_rate) +
+          s(speaker_scaled_amp_max) +
+          s(speaker_scaled_pitch) + 
+          s(speaker_scaled_time, Speaker, bs="fs", k=5, m=1) + #k=5 to reduce load.
+          s(Speaker, bs="re"),
+        data = .x, 
+        method="fREML",
+        discrete = TRUE,
+        nthreads = 8 # Change this depending on number of cores available.
+      ) 
+    )
+  )
+
+write_rds(vowel_gam_models, here('models', 'vowel_gam_models.rds'))
+```
+
+``` {r}
+vowel_gam_models <- read_rds(here('models', 'vowel_gam_models.rds'))
+```
+
+We first look to see if the residual distribution looks any better.
+
+``` {r}
+walk2(
+  vowel_gam_models$Vowel, 
+  vowel_gam_models$model, 
+  ~ qq.gam(.y, main=glue('{.x}: Resids vs. linear pred.'))
+)
+```
+It is not unexpected that each of these vowels has a distribution which has
+strange behaviour in the tails. Some vowels do not have much room to move 'up'
+and some do not have much room to move 'down'. So, for instance, there is
+more variation possible at low F1 values for 
+<span style="font-variant: small-caps;">start</span> and 
+<span style="font-variant: small-caps;">strut</span>, and the model
+thus seems to perform more poorly at low values.
+
+If we look at the model for <span style="font-variant: small-caps;">start</span>
+in more detail we see:
+``` {r}
+gam.check(
+  vowel_gam_models %>%
+    filter(
+      Vowel == "START"
+    ) %>%
+    pull(model) %>%
+    pluck(1)
+)
+```
+There does seem to be something strange happening for some speakers, where the
+model predicts low F1 values, but the actual value is even lower. Again,
+the general pattern looks OK. We are talking about a handful of affected
+observations.
+
+We check our `k` values.
+``` {r}
+vowel_gam_models <- vowel_gam_models %>%
+  mutate(
+    kcheck = map(model, k.check)
+  )
+
+print_kcheck <- function(vowel, kcheck) { # Taken from mgcv gam.check code.
+  cat(glue('{vowel}\n'))
+  cat("\nBasis dimension (k) checking results. Low p-value (k-index<1) may\n") 
+  cat("indicate that k is too low, especially if edf is close to k\'.\n\n")
+  printCoefmat(kcheck, digits=3)
+  cat('\n')
+}
+
+walk2(
+  as.character(vowel_gam_models$Vowel), 
+  vowel_gam_models$kcheck, 
+  print_kcheck
+)
+```
+All look OK!
+
+We now plot the results together.
+``` {r by-vowel-preds, fig.cap = "Amplitude predictions from by-vowel models."}
+all_vowel_plots <- vowel_gam_models %>% 
+  mutate(
+    preds = map(
+      model, 
+      ~ get_predictions(
+        .x,
+        cond = list(
+          'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+          'speaker_scaled_pitch' = 0,
+          'speaker_scaled_art_rate' = 0,
+          'speaker_scaled_time' = 0.5,
+          'participant_gender' = 'F'
+        )
+      )
+    )
+  ) %>%
+  select(Vowel, preds) %>%
+  unnest() %>%
+  mutate(
+    height = if_else(Vowel %in% high_vowels, 'high', 'mid or low')
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_amp_max,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.25,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Amplitude by Vowel",
+    x = "Scaled amplitude",
+    y = "F1"
+  ) +
+  facet_wrap(
+    facets=vars(height), scales = "free"
+  )
+
+all_vowel_plots
+```
+There is a more extreme reduction in F1 values for 
+<span style="font-variant: small-caps;">goose</span> at low values of scaled
+amplitude. The values of 
+<span style="font-variant: small-caps;">lot</span> and 
+<span style="font-variant: small-caps;">trap</span> get a little closer together
+at low values as well. However, the overall story is the same. We see increase
+in F1 with amplitude.
+
+``` {r by-vowel-preds-pitch, fig.cap = "Pitch predictions from by-vowel models."}
+all_vowel_plots <- vowel_gam_models %>% 
+  mutate(
+    preds = map(
+      model, 
+      ~ get_predictions(
+        .x,
+        cond = list(
+          'speaker_scaled_pitch' = seq(-2.5, 2.5, length.out=200),
+          'speaker_scaled_amp_max' = 0,
+          'speaker_scaled_art_rate' = 0,
+          'speaker_scaled_time' = 0.5,
+          'participant_gender' = 'F'
+        )
+      )
+    )
+  ) %>%
+  select(Vowel, preds) %>%
+  unnest() %>%
+  mutate(
+    height = if_else(Vowel %in% high_vowels, 'high', 'mid or low')
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_pitch,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.25,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Pitch by Vowel",
+    x = "Scaled pitch",
+    y = "F1"
+  ) 
+  # facet_wrap(
+  #   facets=vars(height), scales = "free"
+  # )
+
+all_vowel_plots
+```
+The U shaped plots again.
+
+``` {r by-vowel-preds-art, fig.cap = "Articulation rate predictions from by-vowel models."}
+all_vowel_plots <- vowel_gam_models %>% 
+  mutate(
+    preds = map(
+      model, 
+      ~ get_predictions(
+        .x,
+        cond = list(
+          'speaker_scaled_art_rate' = seq(-2.5, 2.5, length.out=200),
+          'speaker_scaled_amp_max' = 0,
+          'speaker_scaled_pitch' = 0,
+          'speaker_scaled_time' = 0.5,
+          'participant_gender' = 'F'
+        )
+      )
+    )
+  ) %>%
+  select(Vowel, preds) %>%
+  unnest() %>%
+  mutate(
+    height = if_else(Vowel %in% high_vowels, 'high', 'mid or low')
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_art_rate,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.25,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Articulation Rate by Vowel",
+    x = "Scaled articulation rate",
+    y = "F1"
+  )
+  # facet_wrap(
+  #   facets=vars(height), scales = "free"
+  # )
+
+all_vowel_plots
+```
+Interestingly, if we model the vowels independently, we lose the increase in F1
+with articulation rate of 
+<span style="font-variant: small-caps;">thought</span>. 
+However, the rest of the phenoemena explicable by vowel space contraction and
+expansion with articulation rate remaine (Figure \@ref(fig:by-vowel-preds-art)).
+
+``` {r by-vowel-preds-time, fig.cap = "Time predictions from by-vowel models."}
+all_vowel_plots <- vowel_gam_models %>% 
+  mutate(
+    preds = map(
+      model, 
+      ~ get_predictions(
+        .x,
+        cond = list(
+          'speaker_scaled_time' = seq(0, 1, length.out=200),
+          'speaker_scaled_pitch' = 0,
+          'speaker_scaled_art_rate' = 0,
+          'speaker_scaled_amp_max' = 0,
+          'participant_gender' = 'F'
+        )
+      )
+    )
+  ) %>%
+  select(Vowel, preds) %>%
+  unnest() %>%
+  mutate(
+    height = if_else(Vowel %in% high_vowels, 'high', 'mid or low')
+  ) %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_time,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.25,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Time by Vowel",
+    x = "Scaled time",
+    y = "F1"
+  )
+
+all_vowel_plots
+```
+There is no great change in our predictions here, with the possible
+exception of an acceleration of change in 
+<span style="font-variant: small-caps;">kit</span>,
+<span style="font-variant: small-caps;">trap</span>, and
+<span style="font-variant: small-caps;">lot</span> at the end of
+a monologue.
+
+As we did with our simple linear models, we do some simple p-value significance
+testing to determine how often our various predictors come out as significant.
+This takes some time as it requires a summary to be generated for each gamm.
+``` {r, eval = FALSE}
+vowel_gam_sig_coeffs <- vowel_gam_models %>%
+  mutate(
+    summary = map(model, summary),
+    smooth_coefficients = map(
+      summary, 
+      ~ as_tibble(.x$s.table, rownames = 'variable'),
+    ),
+    significant_variables = map(
+      smooth_coefficients,
+      ~ .x %>% filter(`p-value` <= 0.05)
+    )
+  ) %>%
+  select(
+    Vowel, significant_variables
+  ) %>%
+  unnest(significant_variables)
+
+write_rds(vowel_gam_sig_coeffs, here("models", "vowel_gam_sig_coeffs.rds"))
+```
+
+``` {r}
+vowel_gam_sig_coeffs <- read_rds(here("models", "vowel_gam_sig_coeffs.rds"))
+```
+
+Let's have a look at the values for `speaker_scaled_amp_max`.
+``` {r}
+vowel_gam_sig_coeffs %>%
+  filter(
+    variable == "s(speaker_scaled_amp_max)"
+  )
+```
+All 11 vowel have significant p-values for amplitude.
+
+We compare these to the values for `speaker_scaled_pitch`:
+``` {r}
+vowel_gam_sig_coeffs %>%
+  filter(
+    variable == "s(speaker_scaled_pitch)"
+  )
+```
+All but <span style="font-variant: small-caps;">start</span> for pitch.
+
+Now `speaker_scaled_art_rate`:
+``` {r}
+vowel_gam_sig_coeffs %>%
+  filter(
+    variable == "s(speaker_scaled_art_rate)"
+  )
+```
+All but 
+<span style="font-variant: small-caps;">dress, nurse,</span> and
+<span style="font-variant: small-caps;">fleece</span>
+for articulation rate.
+
+Finally, we look at `s(speaker_scaled_time)` and `s(speaker_scaled_time, Speaker)`.
+``` {r}
+vowel_gam_sig_coeffs %>%
+  filter(
+    variable == 's(speaker_scaled_time)'
+  )
+```
+Only three vowels come out as significant for `speaker_scaled_time`.
+
+Let's have a look at these `speaker_scaled_time` smooths again:
+``` {r by-vowel-preds-time-2, fig.cap = "Time predictions from by-vowel models."}
+all_vowel_plots <- vowel_gam_models %>% 
+  filter(
+    Vowel %in% c('KIT', 'TRAP', 'STRUT', 'LOT')
+  ) %>%
+  mutate(
+    preds = map(
+      model, 
+      ~ get_predictions(
+        .x,
+        cond = list(
+          'speaker_scaled_time' = seq(0, 1, length.out=200),
+          'speaker_scaled_pitch' = 0,
+          'speaker_scaled_art_rate' = 0,
+          'speaker_scaled_amp_max' = 0,
+          'participant_gender' = 'F'
+        )
+      )
+    )
+  ) %>%
+  select(Vowel, preds) %>%
+  unnest() %>%
+  ggplot(
+    aes(
+      y = fit,
+      x = speaker_scaled_time,
+      colour = Vowel
+    )
+  ) + 
+  geom_ribbon(
+    aes(
+      ymin = fit - CI,
+      ymax = fit + CI,
+      fill = Vowel
+    ),
+    alpha = 0.25,
+    colour = NA
+  ) +
+  geom_line() +
+  scale_colour_manual(
+    values = vowel_colours_with_foot
+  ) +
+  scale_fill_manual(
+    values = vowel_colours_with_foot
+  ) +
+  labs(
+    title = "F1 and Time by Vowel",
+    x = "Scaled time",
+    y = "F1"
+  )
+
+all_vowel_plots
+```
+All of these could have a line at a constant F1 value drawn through their 
+confidence intervals. 
+Whatever this effect is, it is very small compared to the effects of 
+amplitude, pitch, and articulation rate.
+
+### An F2 Model
+
+We want to look at the consequences of amplitude change for the whole vowel
+space. In order to do this, we fit an fREML model for F2. For this purpose,
+we will match Structure 1.
+
+``` {r eval=FALSE}
+gamm_fit_f2 <- bam(
+  F2_50 ~ 
+    participant_gender +
+    Vowel +
+    s(speaker_scaled_time, by=Vowel) + 
+    s(speaker_scaled_art_rate, by=Vowel) +
+    s(speaker_scaled_amp_max, by=Vowel) +
+    s(speaker_scaled_pitch, by=Vowel) + 
+    s(Speaker, bs="re") +
+    s(Speaker, Vowel, bs="re"),
+  data = qb_vowels, 
+  method="fREML",
+  discrete = TRUE,
+  nthreads = 8 # Change this depending on number of cores available.
+)
+
+write_rds(gamm_fit_f2, here('models', 'gamm_fit_f2.rds'))
+
+gamm_fit_f2_summary <- summary(gamm_fit_f2)
+write_rds(gamm_fit_f2_summary, here('models', 'gamm_fit_f2_summary.rds'))
+```
+
+We look at the model summary.
+``` {r}
+gamm_fit_f2 <- read_rds(here('models', 'gamm_fit_f2.rds'))
+gamm_fit_f2_summary <- read_rds(here('models', 'gamm_fit_f2_summary.rds'))
+gamm_fit_f2_summary
+```
+
+We inspect the plots for amplitude, articulation rate, and pitch.
+
+``` {r}
+all_vowel_plot_f2 <- function(predictions, xvar, xlabel, plot_title) {
+  
+  vowel_colours_reordered <- c(
+        FLEECE = "#D89000",
+        DRESS = "#9590FF",
+        TRAP = "#FF62BC",
+        NURSE = "#00BFC4",
+        GOOSE = "#A3A500",
+        KIT = "#39B600",
+        START = "#00B0F6",
+        STRUT = "#F8766D",
+        FOOT = "#966432",
+        LOT = "#00BF7D",
+        THOUGHT = "#E76BF3"
+      )
+
+  xvar <- enquo(xvar)
+  
+  predictions %>%
+    mutate(# Enable plot to distinguish between high and low vowels (for faceting)
+      height = if_else(Vowel %in% front_vowels, "front", "back or mid")
+    ) %>%
+    ggplot(
+      aes(
+        y = fit,
+        x = !!xvar,
+        colour = Vowel
+      )
+    ) + 
+    geom_ribbon(
+      aes(
+        ymin = fit - CI,
+        ymax = fit + CI,
+        fill = Vowel
+      ),
+      alpha = 0.3,
+      colour = NA
+    ) +
+    geom_line() +
+    scale_colour_manual(
+      values = vowel_colours_reordered
+    ) +
+    scale_fill_manual(
+      values = vowel_colours_reordered
+    ) +
+    labs(
+      title = plot_title,
+      x = xlabel,
+      y = "F2"
+    )
+    # facet_wrap(
+    #   facets=vars(height), scales = "free"
+    # )
+}
+```
+
+``` {r amp-f2, fig.cap="F2 and Amplitude by Vowel"}
+gamm_preds <- get_predictions(
+  gamm_fit_f2,
+  cond = list(
+    'speaker_scaled_amp_max' = seq(-2.5, 2.5, length.out=200),
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot_f2(
+  gamm_preds, 
+  speaker_scaled_amp_max, 
+  'Scaled amplitude', 
+  'F2 and Amplitude by Vowel'
+)
+```
+<span style="font-variant: small-caps;">thought</span> (the smooth closest
+to the bottom of the plot) and 
+<span style="font-variant: small-caps;">goose</span> F2 (the brown smooth third
+from the top, on the left)
+stick out. This makes
+sense given our PCA analysis (that is, they are the vowels whose F2 values most
+strongly pattern against the F1 values in PC1).
+In general, we see a reduction in F1, although not as large as in the F1 case. 
+
+Let's look at articulation rate:
+``` {r art-f2, fig.cap="F2 and Articulation Rate by Vowel"}
+gamm_preds <- get_predictions(
+  gamm_fit_f2,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = seq(-2.5, 2.5, length.out=200),
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot_f2(
+  gamm_preds, 
+  speaker_scaled_art_rate, 
+  'Scaled articulation rate', 
+  'F2 and Articulation Rate by Vowel'
+)
+```
+Only 
+<span style="font-variant: small-caps;">dress, fleece,</span> and 
+<span style="font-variant: small-caps;">thought</span> 
+indicated as significant at 0.05. In case of 
+<span style="font-variant: small-caps;">thought</span>, 
+we might have a gradual increase with some surprising 'wiggles'. 
+<span style="font-variant: small-caps;">dress</span> and 
+<span style="font-variant: small-caps;">fleece</span>
+F2 seem to decrease as articulation rate
+increases. This is again consistent with vowel space area reduction.
+
+``` {r pitch-f2, fig.cap="F2 and Pitch by Vowel"}
+gamm_preds <- get_predictions(
+  gamm_fit_f2,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = seq(-2.5, 2.5, length.out=200),
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = unique(qb_vowels$Vowel)
+  )
+)
+
+all_vowel_plot_f2(
+  gamm_preds, 
+  speaker_scaled_pitch, 
+  'Scaled pitch', 
+  'F2 and Pitch by Vowel'
+)
+```
+<span style="font-variant: small-caps;">thought</span>
+F2 is listed in the model summary as significant at 0.05, the plot
+shows that the smooth deviates from the null hypothesis by wiggling in the
+middle. It is hard to be confident that this is a real phenomenon.
+
+#### Vowel Space Plots
+
+We now plot the impact of amplitude and articulation rate within the 
+vowel space as whole. In order to do this, we use the `fREML` models of 
+F1 and F2 with the same structure as used in the `ML` model reported in
+the paper. 
+
+We first collect the data for amplitude and articulation rate:
+``` {r}
+# Extends beyond 2.5 as this seems to help the stability of animations below.
+plotting_range = seq(-2.6, 2.6, by = 0.1)
+
+amp_gamm_preds_f1 <- get_predictions(
+  gamm_fit,
+  cond = list(
+    # We go slightly beyond the bounds of the model to fix a problem where
+    # text labels disappear in the animation below.
+    'speaker_scaled_amp_max' = plotting_range,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = vowels
+  ),
+  se = FALSE
+)
+
+art_gamm_preds_f1 <- get_predictions(
+  gamm_fit,
+  cond = list(
+    # We go slightly beyond the bounds of the model to fix a problem where
+    # text labels disappear in the animation below.
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = plotting_range,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = vowels
+  ),
+  se = FALSE
+)
+
+amp_gamm_preds_f2 <- get_predictions(
+  gamm_fit_f2,
+  cond = list(
+    'speaker_scaled_amp_max' = plotting_range,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = 0,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = vowels
+  ),
+  se = FALSE
+)
+
+art_gamm_preds_f2 <- get_predictions(
+  gamm_fit_f2,
+  cond = list(
+    'speaker_scaled_amp_max' = 0,
+    'participant_gender' = 'F',
+    'speaker_scaled_pitch' = 0,
+    'speaker_scaled_art_rate' = plotting_range,
+    'speaker_scaled_time' = 0.5,
+    'Vowel' = vowels
+  ),
+  se = FALSE
+)
+
+gamm_preds_f1 <- bind_rows(
+  "Articulation Rate" = art_gamm_preds_f1 %>%
+    select(
+      Vowel, speaker_scaled_art_rate, fit
+    ) %>%
+    rename(
+      scaled_value = speaker_scaled_art_rate
+    ),
+  "Amplitude" = amp_gamm_preds_f1 %>%
+    select(
+      Vowel, speaker_scaled_amp_max, fit
+    ) %>%
+    rename(
+      scaled_value = speaker_scaled_amp_max
+    ),
+  .id = "Variable"
+)
+
+gamm_preds_f2 <- bind_rows(
+  "Articulation Rate" = art_gamm_preds_f2 %>%
+    select(
+      Vowel, speaker_scaled_art_rate, fit
+    ) %>%
+    rename(
+      scaled_value = speaker_scaled_art_rate
+    ),
+  "Amplitude" = amp_gamm_preds_f2 %>%
+    select(
+      Vowel, speaker_scaled_amp_max, fit
+    ) %>%
+    rename(
+      scaled_value = speaker_scaled_amp_max
+    ),
+  .id = "Variable"
+)
+
+gamm_preds <- bind_rows(
+  "F1" = gamm_preds_f1, 
+  "F2" = gamm_preds_f2, 
+  .id = "Formant"
+)
+
+gamm_preds <- gamm_preds %>%
+  pivot_wider(
+    names_from = Formant,
+    values_from = fit
+  )
+
+first_obs <- gamm_preds %>%
+  group_by(Vowel, Variable) %>%
+  slice(which.min(scaled_value))
+```
+
+We now produce a **static plot** for the paper:
+``` {r, fig.dim = c(10, 8), fig.cap = "Static plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
+static_plot <- gamm_preds %>%
+  filter(
+    between(scaled_value, -2.5, 2.5)
+  ) %>%
+  ggplot(
+    aes(
+      x = F2,
+      y = F1,
+      colour = Vowel,
+      group = Vowel,
+      label = Vowel,
+      # frame is introduced here for the interactive plot below. It is 
+      # not necessary for the static plot.
+      frame = scaled_value
+    )
+  ) +
+  geom_path(
+    arrow = arrow(length = unit(1.5, "mm"), type = "closed"), # Make arrows smaller
+    show.legend = FALSE
+  ) +
+  # geom_label(
+  #   fontface = 2,
+  #   size = 2, 
+  #   show.legend = FALSE,
+  #   data = first_obs,
+  #   alpha = 0.5
+  # ) +
+  geom_point(data=first_obs) +
+  #label the axes
+  xlab("F2 (Hz)") +
+  ylab("F1 (Hz)") +
+  #reverse the axes to follow conventional vowel plotting
+  scale_x_reverse(expand = expansion(add=100), position = "top") +
+  scale_y_reverse(expand = expansion(add=50), position = "right") +
+  #set the colours. Use of 'rev' means the vowels are labelled roughly from top
+  #to bottom.
+  scale_color_manual(values = rev(vowel_colours_with_foot)) +
+  #add a title
+  labs(
+    title = "Vowel Space Effect of Amplitude and Articulation Rate",
+    subtitle = "By-Speaker Z-Scores Between -2.5 and 2.5"
+  ) +
+  #set the theme
+  # theme_bw() +
+  #make text more visible
+  theme(
+    plot.title = element_text(size = 16, hjust = 0, face = "bold"),
+    plot.subtitle = element_text(size = 16, hjust = 0),
+    panel.spacing.x = unit(6, "mm"),
+    strip.text = element_text(size = 10),
+    # axis.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 8, face = "bold"),
+    axis.text.y = element_text(size = 8, face = "bold", angle = 270),
+    plot.margin = margin(5, 5, 5, 5, "mm"),
+    # axis.ticks = element_blank(),
+    # plot.caption = element_text(size = 14, hjust = 0),
+    # legend.position = "none"
+  ) +
+  facet_grid(cols = vars(Variable))
+
+ggsave(
+  here('plots', 'amp-art.png'),
+  plot = static_plot,
+  units = "cm",
+  width = 25,
+  height = 20
+)
+
+static_plot
+```
+We use points rather than labels here because the shifts in articulation rate
+are so small.
+
+We now produce the same plot as an animation. This will be used in 
+presentations. 
+
+``` {r fig.dim = c(10, 8), fig.cap = "Animated plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
+animated_plot <- gamm_preds %>%
+  ggplot(
+    aes(
+      x = F2,
+      y = F1,
+      colour = Vowel,
+      group = Vowel,
+      label = Vowel
+    )
+  ) +
+  geom_path(
+    arrow = arrow(length = unit(1, "mm"), type = "closed"), # Make arrows smaller
+    show.legend = FALSE
+  ) +
+  geom_label(
+    fontface = 2,
+    size = 2.5,
+    show.legend = FALSE,
+    alpha = 0.5
+  ) +
+  #label the axes
+  xlab("F2 (Hz)") +
+  ylab("F1 (Hz)") +
+  #reverse the axes to follow conventional vowel plotting
+  scale_x_reverse(expand = expansion(add=200), position = "top") +
+  scale_y_reverse(expand = expansion(add=50), position = "right") +
+  #set the colours
+  scale_color_manual(values = rev(vowel_colours_with_foot)) +
+  #add a title
+  labs(
+    title = "Vowel Space Effect of Amplitude and Articulation Rate",
+    subtitle = "By-Speaker Z-Scores Between -2.5 and 2.5",
+    caption = 'Z-scored value: {round(frame_along, 1)}'
+  ) +
+  #set the theme
+  # theme_bw() +
+  #make text more visible
+  theme(
+    plot.title = element_text(size = 16, hjust = 0, face = "bold"),
+    plot.subtitle = element_text(size = 16, hjust = 0),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold", angle = 270),
+    axis.ticks = element_blank(),
+    plot.caption = element_text(size = 14, hjust = 0),
+    # legend.position = "none"
+  ) +
+  facet_grid(cols = vars(Variable)) +
+  transition_reveal(along = scaled_value, range = c(-2.5, 2.5))
+
+animated_plot <- animate(
+  animated_plot, 
+  start_pause = 10,
+  end_pause = 10
+)
+
+animated_plot
+```
+
+Finally, we produce an **interactive plot** using plotly.
+``` {r fig.dim = c(10, 8), fig.cap = "Interactive plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
+interactive_plot <- gamm_preds %>%
+  filter(
+    between(scaled_value, -2.5, 2.5)
+  ) %>%
+  ggplot(
+    aes(
+      x = F2,
+      y = F1,
+      colour = Vowel,
+      group = Vowel,
+      label = Vowel,
+      # frame is introduced here for the interactive plot below. It is 
+      # not necessary for the static plot.
+      frame = scaled_value
+    )
+  ) +
+  geom_text(
+    fontface = 2,
+    size = 3,
+    show.legend = FALSE,
+    alpha = 1
+  ) +
+  #label the axes
+  xlab("F2 (Hz)") +
+  ylab("F1 (Hz)") +
+  #reverse the axes to follow conventional vowel plotting
+  scale_x_reverse(expand = expansion(add=200), position = "top") +
+  scale_y_reverse(expand = expansion(add=50), position = "right") +
+  #set the colours. Use of 'rev' means the vowels are labelled roughly from top
+  #to bottom.
+  scale_color_manual(values = rev(vowel_colours_with_foot)) +
+  #add a title
+  labs(
+    title = "Vowel Space Effect of Amplitude and Articulation Rate",
+    subtitle = "By-Speaker Z-Scores Between -2.5 and 2.5"
+  ) +
+  #set the theme
+  # theme_bw() +
+  #make text more visible
+  theme(
+    plot.title = element_text(size = 16, hjust = 0, face = "bold"),
+    plot.subtitle = element_text(size = 16, hjust = 0),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold", angle = 270),
+    axis.ticks = element_blank(),
+    plot.caption = element_text(size = 14, hjust = 0),
+    legend.position = "none"
+  ) +
+  facet_grid(cols = vars(Variable))
+
+ggplotly(interactive_plot)
+```
+
+The takeaway from these plots is simple: the widely controlled for effect of
+articulation rate on the vowel space is much smaller than the effect of 
+maximum amplitude.
+
+# Amplitude and Topical Units
+
+We now turn to whether variation in relative amplitude, perhaps through 
+changes to articulatory setting, is being used by 
+speakers to indicate topical structure in the QuakeBox monologues.
+
+## Topic Tags and Filtering
+
+We start with a variety of topic tags which come from the QuakeBox transcription 
+process. For the purposes of this modelling, 
+we are not particularly interested in the specific topic being discussed. That 
+is, for the purpose of this analysis, it doesn't matter _which_ earthquake
+is being discussed, or whether the speaker is talking about some other topic.
+We're interested in whether there is any amplitude pattern in topics _in general_.
+
+Even though we are not primarily interested in the specific content of the
+topics, we will keep track of them at this exploratory stage. The 
+unprocessed topic tags applied to a subset of QB monologues are:
+``` {r}
+qb_vowels %>% pull(type) %>% unique()
+```
+Following Brand (2021), we can simplify these tags:
+``` {r}
+qb_vowels <- qb_vowels %>%
+  mutate(
+    topic = str_to_lower(str_trim(type)), # Remove white space and switch to lower case.,
+    topic = str_replace(topic, "earthquakes", "earthquake"),
+    topic = str_replace_all(topic, " experience| to the earthquake| of the earthquake| earthquake", "")
+  )
+
+qb_vowels %>% pull(topic) %>% unique()
+```
+We remove the topic "other".
+``` {r}
+qb_vowels <- qb_vowels %>%
+  mutate(
+    topic = str_replace_all(topic, "\\{other\\}", "")
+  )
+
+qb_vowels %>% pull(topic) %>% unique()
+```
+We are interested in connected spans of monologue which concern the same topic.
+To do this we create a column for each speaker which increases in value for each
+change of topic in the speaker's monologue.
+
+After assessing topic changes, but before creating the new column, we delete
+those sections which do not have a topic tag.
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker) %>%
+  mutate(
+    topic_previous = lag(topic, default = "start"),
+    change = if_else(topic_previous != topic, 1, 0)
+  ) %>%
+  # We now remove untagged sections. Doing this here means we have no risk of
+  # missing a gaps between two sections on the same topic.
+  filter(
+    topic != "" 
+  ) %>%
+  mutate(
+    topic_no = cumsum(change)
+  ) %>%
+  ungroup()
+```
+
+We look at how many speakers touch on each topic.
+```{r}
+qb_vowels %>%
+  group_by(topic) %>%
+  summarise(n_distinct(Speaker))
+```
+Discussions of the February earthquake the aftermath of the February earthquake
+and the September earthquake are very well represented. Thoughts for the future
+only represents three speakers.^[Wikipedia has detailed accounts of the [September, 2010](https://en.wikipedia.org/wiki/2010_Canterbury_earthquake) and [February, 2011](https://en.wikipedia.org/wiki/2011_Christchurch_earthquake) earthquakes.]
+
+We now have all of the distinct single-topic chunks in the corpus. At this
+stage, we can filter by length of topic chunk. Let's look at the distribution of
+topic chunk lengths first (and how many tokens they tend to contain).
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  mutate(
+   topic_length = max(time) - min(time),
+   n_in_topic = n()
+  ) %>%
+  ungroup()
+```
+
+We first look at the topic length distribution (Figure
+\@ref(fig:dist-topic-length)).
+``` {r dist-topic-length, fig.cap="Distribution of Topic Lengths"}
+qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    topic_length = first(topic_length)
+  ) %>%
+  ggplot(
+    aes(
+      x = topic_length
+    )
+  ) +
+  geom_histogram(bins = 100) +
+  labs(
+    main = "Distribution of topic lengths.",
+    x = "Topic length (seconds)",
+    y = "Count"
+  )
+```
+We now look at how many tokens each topic tends to have (Figure \@ref(fig:dist-n)).
+``` {r dist-n, fig.cap="Distribution of Topic Token Counts"}
+qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    n_in_topic = first(n_in_topic)
+  ) %>%
+  ggplot(
+    aes(
+      x = n_in_topic
+    )
+  ) +
+  geom_histogram(bins = 100) +
+  labs(
+    main = "Distribution of Topic Token Counts",
+    x = "Count of tokens in topic",
+    y = "Count of topic chunks"
+  )
+```
+
+Numerical summaries of topic length of the number of tokens per topic might 
+also help:
+``` {r}
+qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    topic_length = first(topic_length),
+    n_in_topic = first(n_in_topic)
+  ) %>%
+  ungroup() %>%
+  select(topic_length, n_in_topic) %>%
+  summary()
+```
+The median topic length is around 1:40 and contains 57 vowel tokens.
+
+For modelling purposes, we want to know how far through a topic we are for each
+vowel token. We do this by scaling the segment onset times within the topic to 
+cover the range [0,1]. That is, we scale in the same way we did for overall 
+time in the preprocessing markdown document.
+
+``` {r}
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  mutate(
+    topic_time_scaled = rescale(time, to=c(0,1))
+  )
+```
+
+We now generate example plots of each topic for an example speaker.
+``` {r topic-amp-ex, fig.cap="Amplitude Changes Across Topic (Example)"}
+qb_vowels %>%
+  filter(
+    Speaker == "QB_NZ_F_559"
+  ) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = intensity_max
+    )
+  ) +
+  geom_point() +
+  #geom_smooth() +
+  facet_wrap(vars(topic_no), scales="free") +
+  labs(
+    title = "QB_NZ_F_559 Topics and Amplitudes",
+    x = "Time (seconds)",
+    y = "Maximum amplitude (db)"
+  )
+```
+
+Figure \@ref(fig:topic-amp-ex) shows an example of six distinct topical 
+chunks from the same speaker. We see that some are shorter than others and
+there seem to be different patterns visible in each. Topic 2, in particular,
+looks to have a downward trajectory. We also see some indication that accounting
+for changes in _variance_ in amplitude might also be of interest (although we
+will not do this in this study). 
+Topic 2 seems to have a large expansion in variance in the
+middle of the topic.
+
+## Linear (Mixed) Model Approach
+
+### Part wrangling
+
+We are interested in whether there is a statistically significant
+effect of coming to the end of a topic and a change in amplitude. The most
+sophisticated way to investigate this is to consider the trajectory of amplitude
+over time with a flexible nonlinear model like a GAMM. However, this level of
+sophistication introduces all sorts of complexities. It is worth starting with 
+a simpler model and seeing what we find. One very simple model assigns
+an amplitude value to the beginning, middle, and end of each topic chunk. We
+will then see whether there is any systematic difference between these values
+in our corpus.
+
+We begin by dividing the topics into three even (by time through the topic)
+chunks.
+``` {r}
+qb_vowels <- qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  mutate(
+    topic_part = cut(
+      topic_time_scaled, 
+      breaks = c(-0.1, 0.33, 0.66, 1.1), 
+      labels = c("start", "middle", "end")
+    )
+  ) %>%
+  group_by(Speaker, topic_no, topic_part) %>%
+  mutate(
+    topic_part_n = n()
+  ) %>%
+  ungroup()
+```
+
+We check that there is an even amount of tokens in the beginning,
+middle, and end chunks (Figure \@ref(fig:topic-topic-n)). Visually, the
+boxes look reasonably similar.
+``` {r topic-topic-n, fig.cap = "Topic parts by token count."}
+qb_vowels %>%
+  ggplot(
+    aes(
+      x = topic_part,
+      y = topic_part_n
+    )
+  ) +
+  geom_boxplot() +
+  labs(
+    title = "Topic Parts by Token Count",
+    x = "Topic part",
+    y = "Token count"
+  )
+```
+Given the code above, it is not possible to have a `topic_part_n` score of 0,
+but it may be that there are some empty parts. We create a new dataframe which
+will have a zero value for any topic part without tokens.
+
+``` {r}
+qb_parts <- qb_vowels %>%
+  group_by(Speaker, topic_no, topic_part, .drop=FALSE) %>%
+  summarise(
+    topic_part_n = first(topic_part_n),
+    topic_part_n = if_else(is.na(topic_part_n), 0L, topic_part_n) # Replace NAs with 0
+  )
+```
+
+We now look at a historgram of the number of tokens within topic parts (Figure
+\@ref(fig:topic-topic-n-dist-2)).
+``` {r topic-topic-n-dist-2, fig.cap="Distribution of token counts within each topic part."}
+qb_parts %>%
+  ggplot(
+    aes(
+      x = topic_part_n
+    )
+  ) +
+  geom_histogram(bins = 100) +
+  labs(
+    title = "Distribution of Token Counts Within Each Topic Part.",
+    y = "Count of topic parts.",
+    x = "Count of tokens within topic part."
+  )
+```
+There are not many parts without a token.
+
+Our linear model will fit a mean to each of our topic parts for each speaker and
+topic. A simple way to ensure enough data for this is to insist on 5 tokens, 
+as we did for our initial speaker filtering.
+
+``` {r}
+topics_to_filter <- qb_vowels %>%
+  filter(
+    topic_part_n < 5
+  ) %>%
+  select(Speaker, topic_no) %>%
+  unique()
+
+speaker_topics_to_filter <- topics_to_filter %>%
+  mutate(
+    speaker_topic = str_c(Speaker, "_", topic_no)
+  ) %>%
+  pull(speaker_topic)
+
+qb_filtered <- qb_vowels %>%
+  mutate(
+    speaker_topic = str_c(Speaker, "_", topic_no)
+  ) %>%
+  filter(
+    !speaker_topic %in% speaker_topics_to_filter
+  )
+```
+
+We lose `r length(speaker_topics_to_filter)` topics from the data set with this
+filtering (from `r qb_vowels %>% select(Speaker, topic_no) %>% unique() %>% nrow()`).
+
+For convenience, we keep only those variables that we want for modelling.
+``` {r}
+qb_glmm_data <- qb_filtered %>%
+  select(
+    Speaker, participant_gender, participant_age_category,
+    Vowel, speaker_scaled_art_rate, speaker_topic, topic_part,
+    topic_time_scaled, speaker_scaled_time, speaker_scaled_amp_max,
+    speaker_scaled_pitch, topic_no, topic, time, speaker_length
+  )
+```
+
+### Modelling
+
+We now look to see if there is any evidence that the parts of topics are
+systematically different in terms of amplitude.
+
+Before formally modelling, we produce a boxplot of amplitude at the start middle
+and end of topics. (Figure \@ref(fig:amp-boxplot)).
+``` {r amp-boxplot, fig.cap = "Topic start, middle, and end amplitude"}
+qb_glmm_data %>%
+  ggplot(
+    aes(
+      x = topic_part,
+      y = speaker_scaled_amp_max
+    )
+  ) +
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha=0.2) +
+  geom_jitter(alpha=0.02) +
+  labs(
+    title = "Start, Middle, and End Mean Amplitudes",
+    y = "Scaled maximum amplitude",
+    x = "Part of topic"
+  )
+```
+We do seem to have a small amplitude reduction at the end of a topic. Since 
+it is hard to read the precise values off Figure \@ref(fig:amp-boxplot), we
+have a look at the means:
+``` {r}
+qb_glmm_data %>%
+  group_by(topic_part) %>%
+  summarise(speaker_scaled_amp_max = mean(speaker_scaled_amp_max, na.rm=TRUE))
+```
+The start and middle sit slightly above the average amplitude, while the end
+sits below. However, we know that amplitude tends to be below the mean at the
+end of monologues and this effect may hide the relative shifts in amplitude
+within topical chunks of the monologue.
+
+#### Model structure one
+
+We fit a model of amplitude with topic part, scaled time through the speaker's
+monologue, and pitch scaled at the speaker level as predictors. We allow each
+speaker to have their own `speaker_scaled_time` slope to capture the overall
+trend in amplitude in their monologue. We do not give each speaker a random
+intercept, since the data is scaled for each speaker. However, we centre the
+time values around 0, so that the intercept is in the centre of the monologue
+and changes in slope can more effectively capture changes over the course of the
+monologue. We also treat each topical chunk independently, allowing the
+beginning, middle, and end to be fit separately for each topical section (as a
+random effect). We could treat topic part as an ordered factor, but I have stuck
+with a simpler model which allows each part to vary independently.
+
+**NB:** Change `eval=FALSE` to `eval=TRUE` to fit this model yourself.
+``` {r, eval=FALSE}
+glmm_fit <- lmer(
+  speaker_scaled_amp_max ~ 
+    topic_part + 
+    speaker_scaled_time + 
+    speaker_scaled_pitch +
+    (0+speaker_scaled_time|Speaker) +
+    (0+topic_part|speaker_topic), 
+  data=qb_glmm_data %>%
+    mutate(
+      speaker_scaled_time = speaker_scaled_time - 0.5
+    ))
+
+# This model needs some help converging. We use the strategy of restarting
+# from current parameters
+pars <- getME(glmm_fit, "theta")
+glmm_fit <- update(glmm_fit, start=pars)
+
+write_rds(glmm_fit, here('models', 'glmm_fit_pitch.rds'))
+```
+
+We look at the summary.
+```{r}
+glmm_fit <- read_rds(here('models', 'glmm_fit_pitch.rds'))
+summary(glmm_fit)
+```
+
+This model provides some evidence for a reduction in amplitude at the end of
+each topical chunk which is not explained by the reduction in amplitude over the
+course of the monologue as a whole or by variation in pitch. We don't get an
+explicit p-value, but our t values for a higher than average amplitude at the
+start of the monologue and a lower than average amplitude at the end of a
+monologue have t-values much greater than two, which we take to be
+surprising.^[Given that this is exploratory research, _surprisingness_ is all we
+can get out of statistical test values (see
+[Baayen et al. 2017](https://www.sciencedirect.com/science/article/pii/S0749596X16302467), 
+227).]
+
+The magnitude of the drop at the end of a topical span is somewhat larger than
+the increase in amplitude at the start of a topical span. The reduction in
+amplitude over the course of an entire monologue can be easily read off the
+`speaker_scaled_time` coefficient, which says an increase in one in scaled time
+is associated with a reduction in amplitude of -0.24 (scaled amplitude).
+Obviously, an increase in monologue length of one represents going through the
+entire monologue.
+
+We have a look at the QQ-plot:
+``` {r qq-topic-glmm, fig.cap='QQ Plot for GLMM model'}
+qqnorm(resid(glmm_fit))
+qqline(resid(glmm_fit), col=2)
+```
+Figure \@ref(fig:qq-topic-glmm) shows that our residuals are behaving
+(sufficiently) normally.
+
+#### Structure 2
+
+Another way to try to handle the known reduction in amplitude over the course of
+a monologue would be to remove all end-of-monologue topics. We filter out all
+monologues which end at the same time that the monologue ends.
+``` {r}
+start_time_filter <- qb_glmm_data %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    end_time = max(time),
+    speaker_length = first(speaker_length)
+  ) %>%
+  mutate(
+    speaker_topic = str_c(Speaker, "_", topic_no)
+  ) %>%
+  filter(
+    end_time == speaker_length
+  ) %>%
+  pull(speaker_topic)
+```
+
+``` {r, eval=FALSE}
+glmm_fit_trimmed <- lmer(
+  speaker_scaled_amp_max ~ 
+    topic_part + 
+    speaker_scaled_time + 
+    speaker_scaled_pitch +
+    (0+speaker_scaled_time|Speaker) +
+    (0+topic_part|speaker_topic), 
+  data=qb_glmm_data %>% 
+    filter(!speaker_topic %in% start_time_filter) %>%
+    mutate(
+      speaker_scaled_time = speaker_scaled_time - 0.5
+    ))
+
+write_rds(glmm_fit_trimmed, here('models', 'glmm_fit_trimmed.rds'))
+```
+
+
+```{r}
+glmm_fit_timmed <- read_rds(here('models', 'glmm_fit_trimmed.rds'))
+summary(glmm_fit_timmed)
+```
+The results of the two models seem roughly equivalent. Since the difference
+between the two isn't great, we'll just visualise the first model.
+
+#### Visualisations of model (structure 1)
+
+We set up a data frame for the data which we want to draw predictions from. We
+set `speaker_time_scaled` to 0, which now represents the middle of the monologue.
+That is, we are asking the model to assume that the speaker is half way through
+their monologue.
+``` {r}
+new_data <- tibble(
+  speaker_topic = rep(unique(qb_glmm_data$speaker_topic), times=3),
+  topic_part = rep(
+    c('start', 'middle', 'end'), 
+    each=length(unique(qb_glmm_data$speaker_topic))
+  ),
+  # Assuming we are in the middle of the monologue
+  speaker_scaled_time = 0,
+  # and at average pitch
+  speaker_scaled_pitch = 0
+)
+
+new_data <- new_data %>%
+  filter(
+    !is.na(speaker_topic)
+  ) %>%
+  mutate(
+    Speaker = str_extract(speaker_topic, 'QB_NZ_[MF]_[0-9]+')
+  )
+
+new_data <- new_data %>%
+  mutate(
+    prediction = predict(glmm_fit, newdata=new_data)
+  )
+```
+
+We plot the model estimates for each topic in the dataset in Figure 
+\@ref(fig:glmm-fit-predictions).
+``` {r glmm-fit-predictions, fig.cap = "Model predictions for each topic at mid point of monologue."}
+new_data %>%
+  mutate(
+    topic_part = factor(topic_part, levels = c('start', 'middle', 'end'))
+  ) %>%
+  ggplot(
+    aes(
+      x = topic_part,
+      y = prediction
+    )
+  ) + 
+  geom_violin(
+    draw_quantiles = c(0.25, 0.5, 0.75),
+    alpha = 0.5
+  ) +
+  geom_jitter(
+    alpha = 0.2
+  ) +
+  labs(
+    title = "Model Predictions for Each Topic",
+    x = "Part",
+    y = "Predicted amplutide"
+  )
+  
+```
+We see a clear difference in the means of the different parts. We will generate
+confidence intervals for our mean estimates after carrying out a check using
+simulated topics below.
+
+### Side Track: Modelling by Specific Topic
+
+An interesting question which this data can address: do people talk relatively
+quietly when discussing different topics? As noted above, this is not our main
+focus, but we can look at relevant data in passing.
+
+``` {r amplitude-by-topic, fig.cap = "Scaled amplitude by topic."}
+qb_glmm_data %>%
+  group_by(Speaker) %>%
+  ggplot(
+    aes(
+      x = topic,
+      y = speaker_scaled_amp_max
+    )
+  ) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(
+    title = "Scaled Amplitude by Topic.",
+    x = "Topic", 
+    y = "Scaled amplitude"
+  )
+```
+Figure \@ref(fig:amplitude-by-topic) suggests lower amplitude when discussing the
+December earthquake (only 17 speakers) and the June earthquake (50 speakers),
+and a higher amplitude when discussing thoughts for the future.
+
+We fit a model to address the same question.
+
+``` {r}
+glmm_fit_topic <- lmer(
+  speaker_scaled_amp_max ~ 
+    topic + 
+    speaker_scaled_time + 
+    speaker_scaled_pitch +
+    (0+speaker_scaled_time|Speaker) +
+    (1|speaker_topic), 
+  data=qb_glmm_data %>%
+    mutate(
+      speaker_scaled_time = speaker_scaled_time - 0.5
+    )
+)
+```
+
+``` {r}
+summary(glmm_fit_topic)
+```
+
+This gives no clear evidence for or against any significant effect here. Exploring
+whether these different specific topics have any discernible phonetic features
+is left for future work.
+
+## GAMM models
+
+### Data transformation
+
+Another way to proceed is to fit GAMM models over topic windows with a
+`speaker_scaled_time` control variable. We'll continue with the data filtered
+for the three part GLMM approach as data gaps can lead to poor behaviour from
+GAMMs.
+
+Let's look at an uncontrolled version produced using `ggplot`'s `geom_smooth`.
+``` {r intensity-topic, fig.cap="Smooth of scaled amp by topic time."}
+qb_filtered %>%
+  group_by(Speaker) %>%
+  ggplot(
+    aes(
+      x = topic_time_scaled,
+      y = speaker_scaled_amp_max
+    )
+  ) + 
+  geom_smooth() +
+  labs(
+    title = "Scaled amplitude over course of topic.",
+    y = "Scaled amplitude",
+    x = "Scaled topic time"
+  )
+```
+
+Figure \@ref(fig:intensity-topic) shows a very similar pattern to 
+Figure \@ref(fig:amp-time). That is, we get a similar drop over the course of a
+topic as we get over the course of the monologue as a whole.
+
+We can, again as a side track, ask if the pattern is different for different topics.
+
+``` {r intensity-specific-topic, fig.cap="Smooth of scaled amp by topic time, by specific topic."}
+qb_filtered %>%
+  group_by(Speaker) %>%
+  ggplot(
+    aes(
+      x = topic_time_scaled,
+      y = speaker_scaled_amp_max
+    )
+  ) + 
+  geom_smooth() +
+  facet_wrap(vars(topic)) +
+  labs(
+    title = "Scaled amplitude over course of topic (specific).",
+    y = "Scaled amplitude",
+    x = "Scaled topic time"
+  )
+```
+
+The relative size of the confidence intervals here mostly tracks different
+amounts of data available for each topic. Those with lots of data seem to have
+gradual slow declines in amplitude. Certainly, there are none with clear and
+systematic _increases_ over the course of the topic. The drop off seems to start
+late, rather than just being a straight line. This is clearest in the case of
+the Feb and Sept earthquakes. Perhaps `{aftermath}` is a counterexample to this.
+Again, this is left open for future research.
+
+It is worth noting that here we are particularly at risk of 
+of misinterpreting the reduction in amplitude over the entire monologue as
+an effect of topic. Some topics, like the February and September earthquakes,
+take up large portions of speaker monologues so we are likely to see any overall
+reduction come through within these topical sections even if the reduction has
+nothing to do with the topics themselves.
+
+### Modelling 
+
+We now model using a GAMM approach. We allow random smooths for 
+each topic in the corpus.
+
+We turn `speaker_topic` into an R factor for the purpose of fitting the GAMM.
+``` {r}
+qb_gamm_data <- qb_glmm_data %>%
+  mutate(
+    speaker_topic = as.factor(speaker_topic)
+  )
+```
+
+``` {r amp-gam, eval=FALSE}
+gamm_topic <- bam(
+  speaker_scaled_amp_max ~ 
+    s(topic_time_scaled) + 
+    s(speaker_scaled_time) +
+    s(speaker_scaled_pitch) +
+    s(topic_time_scaled, speaker_topic, bs = "fs", k=5, m=1) +
+    s(speaker_scaled_time, Speaker, bs = 'fs', k=5, m=1),
+  data = qb_gamm_data,
+  method = 'fREML',
+  discrete = TRUE,
+  nthreads = 8
+)
+
+write_rds(gamm_topic, here('models', 'gamm_topic.rds'))
+
+gamm_topic_summary <- summary(gamm_topic)
+write_rds(gamm_topic_summary, here('models', 'gamm_topic_summary.rds'))
+```
+
+``` {r}
+gamm_topic <- read_rds(here('models', 'gamm_topic.rds'))
+gamm_topic_summary <- read_rds(here('models', 'gamm_topic_summary.rds'))
+gamm_topic_summary
+```
+
+We check the model diagnostics.
+``` {r}
+gam.check(gamm_topic)
+```
+
+It looks like our default `k` values are OK. All other diagnostics are fine.
+
+Let's have a look at the smooths:
+``` {r gamm-amp-topic, fig.cap = "Amplitude by time through topic"}
+plot_smooth(gamm_topic, view="topic_time_scaled")
+```
+
+We see a strong uptick at the start and a strong downward movement at the end
+of topics. Here the model is assuming that we are in the middle of a monologue.
+
+We now look at amplitude through the monologue as predicted by this model.
+``` {r amp-mono, fig.cap = "Amplitude by time through Monologue"}
+plot_smooth(gamm_topic, view="speaker_scaled_time")
+```
+
+Here the model assumes we are midway through a topic, and tells us that
+we drop below the mean value at around 70% of the way through a monologue 
+and then drop to around -0.2 by the end.
+
+Since behaviour of smooths can be affected by data gaps, we look to see that
+there is a similar amount of data in each part of our topical chunks.
+``` {r}
+qb_gamm_data %>%
+  mutate(
+    topic_parts = cut(topic_time_scaled, breaks=10)
+  ) %>%
+  group_by(topic_parts) %>%
+  summarise(
+    n = n()
+  )
+```
+
+These values are reasonably consistent with one another.
+
+These results are consistent with those we obtained from our linear mixed
+models above.
+
+We can see how the different topic smooths look for a particular speaker as
+follows:
+
+``` {r}
+plot_smooth(
+  gamm_topic, 
+  view="topic_time_scaled", 
+  plot_all="speaker_topic", 
+  cond=list(
+    speaker_topic = c(
+      "QB_NZ_F_131_1", "QB_NZ_F_131_2", 
+      "QB_NZ_F_131_3", "QB_NZ_F_131_6", 
+      "QB_NZ_F_131_7"
+    ), 
+    Speaker = c("QB_NZ_F_131")
+  ), 
+  rm.ranef=FALSE)
+```
+
+All of these topics start near or above the mean and end below the mean, with varying
+behaviour in the middle.
+
+## A Test: Fake Topic Generation
+
+One way to test whether the drop in amplitude at the end of topical chunks is a
+real feature of the data or merely explained by the fact that amplitude has a
+tendency to drop over the monologue, is to create fake topics. That is, we will
+cut up the monologue into 'chunks' with no regard to what the speaker is talking
+about.
+
+Let's look at the lengths for each topic in our dataset. We want our fake 
+topical selections to match the real ones in terms of length.
+``` {r}
+topic_lengths <- qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    topic_length = first(topic_length)
+  ) %>%
+  filter(
+    !is.na(topic_no)
+  )
+
+topic_lengths
+```
+Our aim here is to avoid a spurious effect of topic part being generated by
+the decrease in amplitude over the course of an entire monologue. The
+extent of this effect might be affected if our fake topics are, on the whole 
+shorter or longer than the real topics. One way to ensure we have the same 
+distribution of speaker topic lengths is to take random chunks from a 
+speaker monologue which match the length of their actual topics. So, in the 
+case of `QB_NZ_F_131` we have 7 topic lengths available. Our first fake chunk
+would take a random continuous section of the monologue of 731.2 seconds, our
+second would be a random continuous section of the monologue of length 96.4.
+
+To do this, we take the lengths of each speaker's topics and then replace the
+real topics from the speaker with a random span of the same length from the
+speaker's monologue. In the following code block the `chunks` dataframe takes
+information about the speakers full monologue length and the length of 
+each topic, it them sets a random start point for each of the new 
+chunks (ensuring that there is enough time left in the monologue). The function
+`collect_chunk` is then used to collect the data for the defined spans.
+``` {r}
+chunks <- qb_vowels %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    topic_length = first(topic_length),
+    speaker_length = first(speaker_length)
+  ) %>%
+  filter(
+    !is.na(topic_no)
+  ) %>%
+  mutate(
+    chunk_start = map2_int(
+      topic_length, 
+      speaker_length, 
+      ~ sample(seq(0, round(.y - .x)), 1)
+    ),
+    chunk_end = chunk_start + topic_length
+)
+    
+collect_chunk <- function(speaker, chunk_start, chunk_end, vowel_data) {
+  out_df <- vowel_data %>%
+    filter(
+      Speaker == speaker,
+      time > chunk_start,
+      time < chunk_end
+    ) %>%
+    select(
+      c(
+        time, art_rate, Vowel, pitch, speaker_scaled_time, 
+        speaker_scaled_amp_max, topic_no, intensity_max, 
+        speaker_scaled_art_rate, speaker_scaled_pitch
+      )
+    )
+}
+
+
+chunks <- chunks %>%
+  mutate(
+    chunk_df = pmap(
+      list(Speaker, chunk_start, chunk_end),
+      ~ collect_chunk(..1, ..2, ..3, qb_vowels)  
+    )
+  ) %>%
+  rename(
+    chunk = topic_no # We may need to compare overlap of real and fake topics.
+  ) %>%
+  unnest(chunk_df)
+```
+
+### Filtering steps
+
+The following blocks repeat the filtering steps carried out above.
+
+We define the start, middle and end and determine how many tokens are in each.
+``` {r}
+chunks <- chunks %>%
+  group_by(Speaker, chunk) %>%
+  mutate(
+    chunk_time_scaled = rescale(time, to=c(0,1)),
+    chunk_part = cut(
+      chunk_time_scaled, 
+      breaks = c(-0.1, 0.33, 0.66, 1.1), 
+      labels = c("start", "middle", "end")
+    )
+  ) %>%
+  group_by(Speaker, chunk, chunk_part) %>%
+  mutate(
+    chunk_part_n = n()
+  ) %>%
+  ungroup()
+```
+
+We have a look at how many tokens we have in each chunk part.
+``` {r}
+chunk_counts <- chunks %>%
+  group_by(Speaker, chunk, chunk_part, .drop=FALSE) %>%
+  summarise(
+    chunk_part_n = first(chunk_part_n),
+    chunk_part_n = if_else(
+      is.na(chunk_part_n), 0L, chunk_part_n) # Replace NAs with 0
+  )
+```
+
+``` {r, fig.cap = "Number of tokens in each fake topic part."}
+chunk_counts %>%
+  ggplot(
+    aes(
+      x = chunk_part_n
+    )
+  ) +
+  geom_histogram(bins = 100) +
+  labs(
+    title = "Distribution of Token Counts Within Each Chunk Part.",
+    y = "Count of chunk parts.",
+    x = "Count of tokens within chunks part."
+  )
+```
+Looks very similar to \@ref(fig:topic-topic-n-dist-2). This should not be 
+surprising!
+
+We now remove any chunk with less than five tokens.
+``` {r}
+chunks_to_filter <- chunks %>%
+  filter(
+    chunk_part_n < 5
+  ) %>%
+  select(Speaker, chunk) %>%
+  unique()
+
+speaker_chunks_to_filter <- chunks_to_filter %>%
+  mutate(
+    speaker_chunk = str_c(Speaker, "_", chunk)
+  ) %>%
+  pull(speaker_chunk)
+
+chunks_filtered <- chunks %>%
+  mutate(
+    speaker_chunk = str_c(Speaker, "_", chunk)
+  ) %>%
+  filter(
+    !speaker_chunk %in% speaker_chunks_to_filter
+  )
+```
+
+We now look at the difference between the lengths of the real and fake topics
+again (Figure \@ref(fig:real-fake-length-2)).
+
+``` {r real-fake-length-2, fig.cap = "Length distribution of real and fake topics."}
+real_topic_lengths <- qb_filtered %>%
+  group_by(Speaker, topic_no) %>%
+  summarise(
+    topic_length = first(topic_length)
+  ) 
+
+fake_topic_lengths <- chunks_filtered %>%
+  group_by(Speaker, chunk) %>%
+  summarise(
+    topic_length = first(topic_length) # chunk_length
+  ) %>%
+  mutate(
+    Speaker = as.factor(Speaker)
+  )
+
+
+bind_rows(
+  'Real' = real_topic_lengths, 
+  'Fake' = fake_topic_lengths, 
+  .id = "Source"
+) %>%
+  ggplot(
+    aes(
+      x = topic_length,
+      colour = Source
+    )
+  ) +
+  geom_freqpoly(bins=100)
+```
+The only purpose of this plot is to ensure that we have basically the same
+length distribution. The small differences are because different topics/chunks
+will be filtered out by our filtering rules (ensuring each part has at least
+5 tokens).
+
+### GLMM Models
+
+We now copy the GLMM model specification used on the real topic data.
+
+We also save the current 'chunks' and reload them at the next stage. If new
+chunks are generated above, then different speakers may be filtered out
+and it will be impossible to use the visualisation code later in this document.
+Saving the 'chunks' at the same time we save the model allows us to ensure that
+the visualisations below will work. This is unfortunate for reproducibility, but 
+setting a seed at the start of the document does not ensure that the same 
+'chunks' will be generated in interactive use of this code.
+
+``` {r eval=FALSE}
+glmm_fit_2 <- lmer(
+  speaker_scaled_amp_max ~ 
+    chunk_part + 
+    speaker_scaled_time + 
+    speaker_scaled_pitch +
+    (0+speaker_scaled_time|Speaker) +
+    (0+chunk_part|speaker_chunk), 
+  data=chunks_filtered %>%
+    mutate(
+      speaker_scaled_time = speaker_scaled_time - 0.5
+    ))
+
+# This model needs some help converging. We use the strategy of restarting
+# from current parameters
+pars <- getME(glmm_fit_2, "theta")
+glmm_fit_2 <- update(glmm_fit_2, start=pars)
+
+write_rds(glmm_fit_2, here('models', 'glmm_pitch_fit_chunks.rds'))
+write_rds(chunks_filtered, here('processed_data', 'chunks_filtered.rds'))
+```
+
+
+```{r}
+glmm_fit_2 <- read_rds(here('models', 'glmm_pitch_fit_chunks.rds'))
+chunks_filtered <- read_rds(here('processed_data', 'chunks_filtered.rds'))
+summary(glmm_fit_2)
+```
+
+The 'chunks' certainly provide weaker evidence of a reduction in amplitude with
+fake topics. This may simply be due to the reduction in amount of data going 
+in to the model (our chunking process is, in some ways, a filtering process).
+The t-value for the intercept is surprisingly high! Perhaps the model is 
+capturing the pattern of reduction in amplitude by pushing the 'start' of the
+chunks up in amplitude rather than pushing the 'end' down. This is not great 
+for our claim that speakers drop amplitude at the end of topical sections. 
+It is not direct counter evidence though. We will find a way to a more
+principled test below.
+
+We now produce a plot equivalent to Figure \@ref(fig:glmm-fit-predictions).
+``` {r}
+new_data_fake <- tibble(
+  speaker_chunk = rep(unique(chunks_filtered$speaker_chunk), times=3),
+  chunk_part = rep(
+    c('start', 'middle', 'end'), 
+    each=length(unique(chunks_filtered$speaker_chunk))
+  ),
+  # Assuming we are in the middle of the monologue
+  speaker_scaled_time = 0,
+  speaker_scaled_pitch = 0
+)
+
+new_data_fake <- new_data_fake %>%
+  filter(
+    !is.na(speaker_chunk)
+  ) %>%
+  mutate(
+    Speaker = str_extract(speaker_chunk, 'QB_NZ_[MF]_[0-9]+')
+  )
+
+new_data_fake <- new_data_fake %>%
+  mutate(
+    prediction = predict(glmm_fit_2, newdata=new_data_fake)
+  )
+```
+
+
+``` {r glmm-fit-predictions-fake, fig.cap = "Model predictions for each topic at mid point of monologue."}
+new_data_fake %>%
+  mutate(
+    # Make sure chunks are in correct order in plot.
+    chunk_part = factor(chunk_part, levels = c('start', 'middle', 'end'))
+  ) %>%
+  ggplot(
+    aes(
+      x = chunk_part,
+      y = prediction
+    )
+  ) + 
+  geom_violin(
+    draw_quantiles = c(0.25, 0.5, 0.75),
+    alpha = 0.5
+  ) +
+  geom_jitter(
+    alpha = 0.1
+  ) +
+  labs(
+    title = "Model Predictions for Each Chunk (Fake Topic) with Position in Monologue Controlled.",
+    x = "Part",
+    y = "Predicted amplutide"
+  )
+  
+```
+
+All are assumed to be above 0 in scaled amplitude in this model, with a slightly
+increased value for the start.
+
+To make this even clearer, we plot the two together using violin plots.
+``` {r compare-predictions, fig.cap = "Predicted values of real and fake topics at mid point of monologue."}
+bind_rows(
+    "Real topics" = new_data,
+    "Fake topics" = new_data_fake %>%
+      rename(
+        topic_part = chunk_part,
+        speaker_topic = speaker_chunk
+      ),
+    .id = "source"
+  ) %>%
+  mutate(
+    # Make sure chunks are in correct order in plot.
+    topic_part = factor(topic_part, levels = c('start', 'middle', 'end'))
+  ) %>%
+  ggplot(
+    aes(
+      x = topic_part,
+      y = prediction,
+      colour = source
+    )
+  ) +
+  geom_violin(
+    draw_quantiles = c(0.25, 0.5, 0.75),
+    alpha = 0.2
+  ) + 
+  labs(
+    title = "Predicted Values for Real and Fake Topics at Midpoint of Monologue",
+    y = "Predicted (scaled) amplitude",
+    x = "Part"
+  )
+  
+```
+
+While the violin plots in Figure \@ref(fig:compare-predictions) might not look
+very different from one another, we see the increase over the mean amplitude
+at the start of the real topics and a greater drop at the end
+of the monologue. The fake topics, by contrast, stay much closer to the mean
+value for amplitude. The reduction from start to end in the real topics is
+great than the reduction in the fake topics.
+
+We can make this more rigourous by estimating standard errors for both models
+using the `confint.merMod` function. This takes quite a while to compute. So
+we save the results and load them in the next cell. To run this yourself,
+change `eval` to `TRUE`, as above.
+``` {r, eval=FALSE}
+boot_real <- confint.merMod(
+  glmm_fit, 
+  method = "profile",
+  parm=c(
+    '(Intercept)', 
+    'topic_partmiddle', 
+    'topic_partend', 
+    'speaker_scaled_time',
+    'speaker_scaled_pitch'
+  )
+)
+boot_fake <- confint.merMod(
+  glmm_fit_2,
+  method='profile',
+  parm=c(
+    '(Intercept)', 
+    'chunk_partmiddle', 
+    'chunk_partend', 
+    'speaker_scaled_time',
+    'speaker_scaled_pitch'
+  )
+)
+
+write_rds(boot_real, here('models', 'real_topic_boot.rds'))
+write_rds(boot_fake, here('models', 'fake_topic_boot.rds'))
+```
+
+
+``` {r}
+boot_real <- read_rds(here('models', 'real_topic_boot.rds'))
+boot_fake <- read_rds(here('models', 'fake_topic_boot.rds'))
+print('Real topics')
+boot_real
+print('Fake topics')
+boot_fake
+```
+
+Let's plot these:
+``` {r bootstrap-coeffs, fig.cap = "Bootstrap coefficients for real and fake topics."}
+real_coefs <- coef(summary(glmm_fit))[, 'Estimate'] %>%
+  as_tibble(rownames = "variable") %>%
+  mutate(
+    ll = boot_real[,'2.5 %'],
+    ul = boot_real[, '97.5 %']
+  )
+
+fake_coefs <- coef(summary(glmm_fit_2))[, 'Estimate'] %>%
+  as_tibble(rownames = "variable") %>%
+  mutate(
+    ll = boot_fake[,'2.5 %'],
+    ul = boot_fake[, '97.5 %'],
+    variable = str_replace(variable, 'chunk', 'topic')
+  )
+
+glmm_coefs <- bind_rows(
+  "Real" = real_coefs,
+  "Fake" = fake_coefs,
+  .id = "Source"
+)
+
+pd = position_dodge(width=0.5)
+
+glmm_coefs %>%
+  filter(
+    !variable %in% c('speaker_scaled_time', 'speaker_scaled_pitch')
+  ) %>%
+  mutate(
+    variable = factor(
+      variable, 
+      levels = c(
+        '(Intercept)', 'topic_partmiddle', 'topic_partend'
+      )
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = variable,
+      y = value,
+      colour = Source,
+      group = Source
+    )
+  ) + 
+  geom_line(position=pd, alpha = 0.5) +
+  geom_point(position=pd) +
+  geom_errorbar(
+    aes(
+      ymin = ll, ymax = ul
+    ),
+    width = 0.25,
+    position=pd,
+    alpha = 0.5
+  ) +
+  labs(
+    title = "Bootstrap 95% Confidence Intervals of Coefficients for Real and Fake Topics",
+    x = "Topic part",
+    y = "Scaled amplitude"
+  )
+```
+
+The middle and end of the fake topics have 0 within their 95%
+confidence intervals. The reduction
+at the end in the real topics is
+outside the range to be expected from the fake topics.
+
+### GAMM Models
+
+We now preform the same analysis with GAMM models.
+
+``` {r}
+qb_gamm_fake_data <- chunks_filtered %>%
+  mutate(
+    speaker_chunk = str_c(Speaker, '_', chunk),
+    speaker_chunk = as.factor(speaker_chunk),
+    Speaker = as.factor(Speaker)
+  )
+```
+
+``` {r amp-gam-fake-topics, eval=FALSE}
+gam_fake_fit <- bam(
+  speaker_scaled_amp_max ~ 
+    s(chunk_time_scaled) + 
+    s(speaker_scaled_time) +
+    s(speaker_scaled_pitch) +
+    s(chunk_time_scaled, speaker_chunk, bs = "fs", k=5, m=1) +
+    s(speaker_scaled_time, Speaker, bs = 'fs', k=5, m=1),
+  data = qb_gamm_fake_data,
+  method = 'fREML',
+  discrete = TRUE,
+  nthreads = 8
+)
+
+write_rds(gam_fake_fit, here('models', 'gam_fake_fit.rds'))
+
+gam_fake_fit_summary <- summary(gam_fake_fit)
+write_rds(gam_fake_fit_summary, here('models', 'gam_fake_fit_summary.rds'))
+```
+
+``` {r}
+gam_fake_fit <- read_rds(here('models', 'gam_fake_fit.rds'))
+gam_fake_fit_summary <- read_rds(here('models', 'gam_fake_fit_summary.rds'))
+gam_fake_fit_summary
+```
+Let's have a look at the main effect smooths:
+
+``` {r fake-fit-chunk, fig.cap="Smooth over fake topics"}
+plot_smooth(gam_fake_fit, view="chunk_time_scaled")
+```
+
+The effect here is less clear than that in Figure \@ref(fig:gamm-amp-topic). 
+We could, for instance, draw a straight line through these confidence 
+intervals at around a scaled amplitude of 0.055.
+Note that
+we are asking the model to assume that we are roughly half way through the 
+monologue, so we should not be surprised to be slightly above 0 throughout (
+see Figure \@ref(fig:fake-fit-monologue)).
+
+``` {r fake-fit-monologue, fig.cap="Smooth over speaker scaled time."}
+plot_smooth(gam_fake_fit, view="speaker_scaled_time")
+```
+This is, in general, quite similar to (Figure \@ref(amp-mono)). This is good,
+as we have not removed the temporal order of the data. All we have done is 
+select random places at which to start and end topics.
+
+### A Final Permutation Test
+
+Further experimentation with these models reveals that the process of randomly
+assigning 'chunks' has a big effect on the results of the models here. One
+way to get a sense of things which does not depend on the specific 'chunks' is
+to rerun the analysis multiple times as we did in our permutation tests in 
+`corpus_pca.Rmd`.
+
+The script which performs this analysis is available at 
+`scripts/permutation_topics.R`. It reruns the chunking process and then fits
+the linear mixed model structure above. It then extracts the coefficients,
+t values, and errors from each model. 1000 iterations of the process were
+carried out.
+
+We load in the results here:
+``` {r}
+coefs <- read_rds(here('processed_data', 'glmm_pitch_coeffs_perm.rds'))
+ses <- read_rds(here('processed_data', 'glmm_pitch_ses_perm.rds'))
+t_vals <- read_rds(here('processed_data', 'glmm_pitch_tvals_perm.rds'))
+```
+
+We will visualise the distribution of coefficient results, errors, and t values.
+
+We first define a general function:
+``` {r}
+violin_three_way <- function(plot_data, comparison_data = list()) {
+  out_plot <- plot_data %>%
+    as_tibble() %>%
+    pivot_longer(
+      cols = everything(),
+      values_to = "value"
+    ) %>%
+    mutate(
+      name = factor(
+        name, 
+        levels = c(
+          '(Intercept)', 'chunk_partmiddle', 'chunk_partend', 
+          'speaker_scaled_time', 'speaker_scaled_pitch'
+        )
+      )
+    ) %>%
+    filter(
+      !name %in% c('speaker_scaled_pitch')
+    ) %>%
+    ggplot(
+      aes(
+        x = name,
+        y = value
+      )
+    ) +
+    geom_violin(draw_quantiles = c(0.05, 0.5, 0.95))
+  
+  if (length(comparison_data) > 1) {
+    out_plot <- out_plot +
+      geom_point(colour = "red", data = comparison_data)
+  }
+  
+  out_plot
+}
+```
+
+We then extract the coefficients, t-values, and ses from our model fit on the
+real data.
+``` {r}
+var_names <- c(
+  '(Intercept)', 'chunk_partmiddle', 'chunk_partend', 'speaker_scaled_time',
+  'speaker_scaled_pitch'
+)
+
+summ_glmm_fit <- summary(glmm_fit)
+
+real_model <- summ_glmm_fit$coefficients[,1] %>%
+  as.tibble() %>%
+  mutate(
+    name = var_names
+  ) %>% 
+  filter(
+    !name %in% c('speaker_scaled_pitch')
+  )
+  
+real_model_s <- summ_glmm_fit$coefficients[,2] %>%
+  as.tibble() %>%
+  mutate(
+    name = var_names
+  ) %>%
+  filter(
+    !name %in% c('speaker_scaled_pitch')
+  )
+
+real_model_t <- summ_glmm_fit$coefficients[,3] %>%
+  as.tibble() %>%
+  mutate(
+    name = var_names
+  ) %>%
+  filter(
+    !name %in% c('speaker_scaled_pitch')
+  )
+```
+
+We visualise the coefficients:
+``` {r coef-dist, fig.cap = "Distribution of Coefficient Estimates for Random and Topical Segments."}
+violin_three_way(coefs, real_model) +
+  labs(
+    title = "Distribution of Coefficient Estimates for Random and Topical Segments",
+    caption = "Red points indicate values for topical segments",
+    y = "Speaker scaled max amplitude",
+    x = "Coefficient"
+  )
+```
+
+The coefficient estimates for our real model are easily within the range 
+estimated in the 'chunks'. Interestingly, on the whole, estimates for 
+`chunk_partmiddle` are lower than 0, and lower than the initial and final
+segments of chunks. This the average model of our faked chunks will have a 
+'u' shape rather than a steady decline.
+
+``` {r t-dist, fig.cap = "Distribution of t-values for Random and Topical Segments."}
+violin_three_way(t_vals, comparison_data = real_model_t) +
+  labs(
+    title = "Distribution of t-values for Random and Topical Segments",
+    caption = "Red points indicate values for topical segments",
+    y = "t-value",
+    x = "Coefficient"
+  )
+```
+Figure \@ref(fig:t-dist) that our real data sits towards the tails of the significance
+achieved by the models fit on fake topics. We should be particularly surprised
+by the values for `chunk_partend` and `(Intercept)`, that is the first third of
+the chunk. We see that the vast majority of the models we fit will have t-values
+less than 2 for their various coefficients.
+
+
+``` {r ses-dist, fig.cap = "Distribution of standard errors for random and topical segments."}
+violin_three_way(ses, comparison_data = real_model_s) +
+  labs(
+    title = "Distribution of Standard Errors for Random and Topical Segments",
+    caption = "Red points indicate values for topical segments",
+    y = "ses value",
+    x = "Coefficient"
+  )
+```
+
+In all cases, we see the standard errors for the real topics 
+sitting below the distribution for the fake topics. There are two phenomena 
+which might be behind this:
+
+1. There is a real pattern in amplitude over the course of topical segments of
+monologues and this commonality enables the model to fit to this pattern with 
+more confidence than is possible when we ta(4)ke random sections of the monologue
+as our topics.
+2. The creation of fake topics ('chunks') involves data loss, so that there is
+more data available and thus the model can achieve fit estimates within tighter
+confidence intervals.
+
+We take it that the above provides at least some evidence that amplitude
+indicates position within a topical subsection of a monologue. The difficulty
+in pinning this down with increased confidence is the difficulty of distinguishing
+between the reduction in amplitude across the monologue as a whole and the 
+reduction in amplitude which might be explained by position in a topical 
+subsection. Straight-forwardly, the end of a topical section is later in the
+monologue than the start and so would be expected to be of somewhat lower
+amplitude.

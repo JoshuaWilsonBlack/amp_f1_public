@@ -1,0 +1,669 @@
+---
+title: "SM1. Data filtering and outlier removal"
+subtitle: "Supplementary Material for 'The overlooked effect of amplitude on within-speaker vowel variation'"
+author: "Joshua Wilson Black, Jen Hay, Lynn Clark, James Brand"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    fig_caption: true
+    toc: true
+    toc_float: true
+    theme: flatly
+    collapsed: no
+    df_print: paged
+    code_folding: show
+---
+
+<style>
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+    background-color: #95A044;
+}
+
+pre {
+  max-height: 300px;
+  overflow-y: 300px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  fig.align='center', 
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+
+# Overview
+
+This worksheet presents the data preprocessing steps carried out for the
+project.
+
+We cover, in turn:
+
+1. data filtering
+2. outlier removal, 
+3. checking for overlapping vowel spaces, and
+4. description of the resulting data.
+
+Throughout we use packages in the `tidyverse`. The workflow we adopt closely
+follows [Brand et al. (2021)](https://doi.org/10.1016/j.wocn.2021.101096).
+
+**NB:** Code blocks in this markdown which output files have been set to not
+evaluate. This is to prevent writing over data while tidying the document. In
+order to follow our analysis, you may need to change `eval=FALSE` to `eval=TRUE`
+in some code blocks. These will be noted when they appear.
+
+# Libraries and Raw Data
+
+```{r message=FALSE}
+# Tidyverse and friends
+library(tidyverse)
+library(glue)
+library(gganimate)
+library(ggforce)
+library(tidyselect)
+
+# Flow diagrams
+library(DiagrammeR)
+
+# Filepath management.
+library(here)
+
+# Scaling and cleaning data.
+library(scales)
+library(janitor)
+library(kableExtra)
+```
+
+The environment used to knit this document was:
+``` {r}
+sessionInfo()
+```
+
+The raw data comes from the QuakeBox corpus 
+[(Clark et al, 2016](https://www.sciencedirect.com/science/article/pii/S2215039016300066), 
+see also [this link](https://quakestudies.canterbury.ac.nz/store/collection/235) 
+for more information and example recordings).
+
+The corpus comprises a sociolinguistic database of audio and video recordings,
+where members of the public were invited to record stories of their experiences
+of the earthquakes that hit Christchurch, New Zealand in 2010-2011. The stories
+were recorded in high quality audio and video. Participants were prompted to
+‘tell us your earthquake story’. The recordings took place in 2012 and were
+forced-aligned using the HTK aligner (Young et al., 2002), with the corpus 
+stored on a LaBB-CAT instance [(Fromont and Hay, 2012)](https://www.aclweb.org/anthology/U12-1015/). 
+
+We carried out pitch, formant and amplitude tracking by means of LaBB-CAT's interface with
+[Praat](https://www.fon.hum.uva.nl/praat/). Default settings were used:
+
+- Formants:
+  - sample point: 0.5,
+  - maximum formants: 5,
+  - maximum formant value (female): 5500,
+  - maximum formant value (male): 5000,
+  - window length: 0.025 seconds,
+  - preemphasis from: 50 hertz.
+- Pitch:
+  - get mean, minimum, and maximum,
+  - time.step: 0,
+  - minimum pitch (female): 60,
+  - minimum pitch (male): 30,
+  - maximum pitch (female): 500,
+  - maximum pitch (male): 250,
+  - maximum candidates: 15,
+  - silence threshold: 0.03,
+  - voicing threshold (female): 0.5,
+  - voicing threshold (male): 0.4,
+  - octave cost: 0.01,
+  - octave jump cost: 0.035,
+  - voiced/unvoiced cost: 0.35,
+  - window length: 0.025 seconds,
+  - preemphasis from: 50 hertz.
+- Amplitude (taken from word rather than vowel token):
+  - minimum pitch: 100 hertz,
+  - subtract mean: FALSE.
+  
+Amplitude values were only meaningful for words of length greater than 0.064
+seconds. 
+
+The corpus was queried for all instances of the following vowels: <span style="font-variant:small-caps;">dress, fleece, foot, goose, kit, lot, nurse, schwa, start, strut, thought, trap.</span> 
+We exclude speakers who did not grow up in New Zealand. We have anonymised the data and
+stored it as an `rds` file.
+
+```{r data-import}
+#Raw data import
+Quakebox_anonymised <- read_rds(
+  here('labbcat_data', 'anonymised_data.rds')
+)
+
+# The 'count_' variables taken throughout are used to plot how many tokens are 
+# lost at each stage of filtering. We have to hard code the first variable as
+# we cannot share the full non-anonymised data set.
+count_orig <- 486073
+count_load <- nrow(Quakebox_anonymised)
+```
+
+At this point it is convenient to rename variables.
+``` {r variable-rename}
+Quakebox_anonymised <- Quakebox_anonymised %>%
+  rename(
+    Speaker = speaker,
+    F1_50 = F1,
+    F2_50 = F2,
+    Vowel = vowel
+  )
+```
+
+# Filtering
+
+The anonymised data we have made publicly available has already had stopwords,^[The removed stopwords
+were: 'a', 'ah', 'ahh', 'am', 'an', 'and', 'are', "aren't", 'as', 'at', 'aw',
+'because', 'but', 'could', 'do', "don't", 'eh', 'for', 'from', 'gonna', 'had',
+'has', 'have', 'he', "he's", 'her', 'high', 'him', 'huh', 'i', "i'll", "i'm",
+"i've", "i'd", 'in', 'into', 'is', 'it', "it's", 'its', 'just', 'mean', 'my',
+'nah', 'not', 'of', 'oh', 'on', 'or', 'our', 'says', 'she', "she's", 'should',
+'so', 'than', 'that', "that's", 'the', 'them', 'there', "there's", 'they',
+'this', 'to', 'uh', 'um', 'up', 'was', "wasn't", 'we', 'were', 'what', 'when',
+'which', 'who', 'with', 'would', 'yeah', 'you', "you've"] 
+words with
+hesitations, and tokens without transcribed words removed. Otherwise, there
+would be enough information to determine the identities of many of our
+participants. The remaining filtering steps are carried out in this worksheet.
+
+
+We now remove:
+
+- any tokens of duration less than 0.01 or greater than 2 (seconds),
+- any with missing gender information,
+- any instances of <span style="font-variant:small-caps;">schwa</span>, and
+- any unstressed tokens.
+
+```{r warning=FALSE}
+Quakebox_filtered <- Quakebox_anonymised %>%
+  filter(
+    vowel_duration >= 0.01, #filter tokens with very short or long vowel durations
+    vowel_duration <= 2,
+    !is.na(participant_gender), #filter speakers with missing gender
+    Vowel != "SCHWA", #remove all SCHWA tokens
+    Target.stress != "0" #filter any unstressed tokens
+  ) 
+
+count_filter <- nrow(Quakebox_filtered)
+```
+
+We categorise following segments into labials, velars, liquids and others. We
+remove any vowel tokens which are followed by a liquid. NZE has vowel
+mergers before /l/, and postvocalic /r/ and /l/ are only variably realized with
+high levels of /l/-vocalization and low levels of rhoticity. We cannot
+accurately control for the effect on the formants of these phenomena.
+
+``` {r remove-preceding-r-l}
+Quakebox_filtered <- Quakebox_filtered %>%
+  
+  # Categorise following segments
+  mutate(
+    following_segment = following_segment[, 1],
+    following_segment_category = fct_collapse(
+      as_factor(following_segment),
+      labial = c('m', 'p', 'b', 'f', 'w'),
+      velar = c('k', 'g', 'N'),
+      liquid = c('r', 'l'),
+      other_level = "other"
+    )
+  ) %>%
+  
+  # Filter out tokens which are followed by a liquid.
+  filter(
+    !following_segment_category == 'liquid'
+  )
+
+count_liquid <- nrow(Quakebox_filtered)
+```
+
+
+# Outlier Removal
+
+We now remove outliers. These are likely the result of errors in the force
+alignment or transcription process. Following Brand et al. (2021) we filter
+tokens with F1s above 1100. An F1 value this high suggests a tracking problem.
+For each speaker, and for their F1 and F2
+for each vowel, we calculate the mean and standard deviation and remove tokens
+which have values above or below 2.5 standard deviations from the mean.
+
+``` {r sd-outlier-removal}
+#Set standard deviation limit at 2.5.
+sd_limit = 2.5
+
+vowels_all_summary <- Quakebox_filtered %>%
+  # Remove all tokens with F1 above 1100hz.
+  filter(F1_50 < 1100) %>% 
+  # Remove tokens at +/- 2.5 standard deviations
+  group_by(Speaker, Vowel) %>%
+  summarise(
+    #calculate the summary statistics required for the outlier removal.
+    n = n(),
+    mean_F1 = mean(F1_50, na.rm = TRUE),
+    mean_F2 = mean(F2_50, na.rm = TRUE),
+    sd_F1 = sd(F1_50, na.rm = TRUE),
+    sd_F2 = sd(F2_50, na.rm = TRUE),
+    # Calculate cut off values.
+    max_F1 = mean(F1_50) + sd_limit*(sd(F1_50)),
+    min_F1 = mean(F1_50) - sd_limit*(sd(F1_50)),
+    max_F2 = mean(F2_50) + sd_limit*(sd(F2_50)),
+    min_F2 = mean(F2_50) - sd_limit*(sd(F2_50))
+  )
+
+#store the outlier tokens data
+outlier_tokens <- Quakebox_filtered %>%
+  left_join(vowels_all_summary) %>% #add the summary values to the main data
+  mutate(
+    outlier = ifelse(
+      F1_50 > min_F1 &
+        F1_50 < max_F1 &
+        F2_50 > min_F2 &
+        F2_50 < max_F2, 
+      FALSE, # If a token satisfiers all four conditions, it *is not* an outlier.
+      TRUE # If it fails any of the above conditions, it *is* an outlier.
+    )
+  ) %>%
+  group_by(Speaker, Vowel) %>%
+  filter(outlier == TRUE) %>%
+  ungroup()
+
+#this is the main outlier filtering step.
+Quakebox_filtered <- Quakebox_filtered %>%
+  inner_join(vowels_all_summary) %>%
+  mutate(
+    outlier = ifelse(
+      F1_50 > min_F1 &
+        F1_50 < max_F1 &
+        F2_50 > min_F2 &
+        F2_50 < max_F2, 
+      FALSE, 
+      TRUE
+    )
+  ) %>%
+  group_by(Speaker, Vowel) %>%
+  filter(outlier == FALSE) %>%
+  ungroup()
+
+count_outlier <- nrow(Quakebox_filtered)
+```
+
+and then remove the 5% tails of the
+distribution for each speaker and each formant of each vowel.
+
+# Overlapping vowel spaces
+
+We check for any speakers whose vowel spaces overlap. This likely means that
+there has been a systematic problem with extracting vowel information from their
+recordings. This step was particularly important in Brand et al. (2021), which
+used a more noisy data source than the QuakeBox corpus (including historical
+recordings).
+
+In order to do this we work out the distribution of average distances between
+vowels in vowel space for each speaker and examine the vowel spaces of those
+which appear in the bottom tail of the distribution.
+
+```{r inspect-overlap, fig.cap = "Distribution of mean euclidean distance between vowels for each speaker"}
+#calculate speaker means and sd
+speaker_means <- Quakebox_filtered %>%
+  group_by(Speaker, Vowel) %>% 
+  summarise(
+    n = n(),
+    F1_mean = mean(F1_50),
+    F2_mean = mean(F2_50),
+    F1_sd = sd(F1_50),
+    F2_sd = sd(F2_50)
+  ) 
+
+#calculate euclidean distances between vowel means
+speaker_distances <- speaker_means %>%
+  mutate(
+    #calculate the euclidean distance matrix between the vowel means for each
+    #speaker
+    Dist = colMeans(
+      as.matrix(dist(cbind(F1_mean, F2_mean)))
+    )
+  ) %>%
+  ungroup() %>% 
+  
+  #calculate the mean distance across all vowels (by speaker)
+  group_by(Speaker) %>% 
+  summarise(
+    mean_dist = mean(Dist)
+  ) %>%
+  
+  #create a new variable for plotting
+  mutate(
+    Speaker_dist = paste(round(mean_dist, 2), Speaker)
+  ) 
+
+#plot the distribution
+ggplot(
+  speaker_distances, 
+  aes(x = mean_dist)
+  ) +
+  geom_density() +
+  geom_vline(
+    xintercept = mean(speaker_distances$mean_dist), 
+    linetype = 1
+  ) +
+  geom_vline(
+    xintercept = mean(speaker_distances$mean_dist) + 
+      2*sd(speaker_distances$mean_dist), 
+    linetype = 2
+  ) +
+  geom_vline(
+    xintercept = mean(speaker_distances$mean_dist) - 
+      2*sd(speaker_distances$mean_dist), 
+    linetype = 2, 
+    colour = "red") +
+  theme_bw() +
+  labs(
+    title = "Distribution of Mean Euclidean Distance Between Vowels for Each Speaker",
+    xlab = "Mean Euclidian Distance",
+    ylab = "Density"
+  )
+
+#filter speakers who are -2 SDs from the mean euclidean distance
+outlier_speakers <- speaker_means %>%
+  inner_join(speaker_distances) %>%
+  filter(
+    mean_dist < mean(speaker_distances$mean_dist) - 
+      2*sd(speaker_distances$mean_dist)
+  )
+
+#plot the outlier speakers vowel spaces
+outlier_speakers_plot <- Quakebox_filtered %>%
+  filter(Speaker %in% outlier_speakers$Speaker) %>%
+  inner_join(outlier_speakers) %>%
+  arrange(mean_dist) %>%
+  ggplot(
+    aes(x = F2_50, y = F1_50, colour = Vowel)
+  ) +
+  geom_point(size = 0.02, alpha = 0.5) +
+  stat_ellipse(level = 0.67) +
+  geom_text(
+    data = outlier_speakers, 
+    aes(
+      x = F2_mean, 
+      y = F1_mean, 
+      label = Vowel
+    ), 
+    size = 2) +
+  scale_x_reverse() +
+  scale_y_reverse() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(
+    title = "Low Mean Euclidean Distance Vowel Spaces"
+  )
+```
+
+We look at the vowel spaces of each of the speakers in the bottom tail of this
+distribution to see if there has been some problem extracting their
+vowels.
+```{r overlap-speakers, fig.dim=c(10,10), fig.cap="Low mean distance speaker vowel spaces."}
+outlier_speakers_plot + facet_wrap(vars(Speaker_dist), scales="free")
+```
+
+We are here looking for completely implausible vowel spaces for NZE speakers.
+All of the speakers in the bottom tail of between-vowel Euclidean distance are
+within the realm of possibility for NZe speakers (Figure \@ref(fig:overlap-speakers)).
+We will keep them all in the data set.
+
+At this point it is convenient to reorder the dataset to ensure that it is
+organised by the `Speaker` column and in the order in which the tokens appear in
+each speaker's monologue. We will also remove extra variables generated in the
+filtering process.
+
+``` {r reorder}
+Quakebox_filtered <- Quakebox_filtered %>%
+  # remove new variables
+  select(
+    -c(
+      "outlier",
+      "n",
+      "mean_F1",
+      "mean_F2",
+      "sd_F1",
+      "sd_F2",
+      "min_F1",
+      "min_F2",
+      "max_F1",
+      "max_F2"
+    )
+  ) %>%
+  arrange(Speaker, Target.segments.start) # order data by speaker and by time.
+```
+
+We save the resulting dataset. **NB:** To actually output set `eval` to TRUE in
+the block options.
+
+``` {r, eval=FALSE}
+write_rds(
+  Quakebox_filtered, here('processed_data', 'Quakebox_filtered.rds')
+)
+```
+
+# Data Description and Visualisation
+
+The pre-anonymization dataset contained 486073 tokens. After stopwords and
+hesitations are removed we have 273055 tokens. Removal of unstressed tokens and
+schwa leaves us with 162696 tokens, removal of tokens preceding liquids gives
+142594 tokens. Standard deviation filtering gives 136792 tokens, and quantile
+removal gives 107481 tokens. This is summarised in Figure \@ref(fig:filtering-flow).
+
+``` {r filtering-flow, fig.cap='Filtering flow chart'}
+# Flow chart generated using the DiagrammeR package.
+flow_chart <- mermaid(
+  diagram = glue("
+  graph TB
+  
+  A(Extract data from LaBB-CAT: {count_orig} tokens) --> 
+    B(Remove stopwords and hesitations: {count_load} tokens)
+  B --> C(Filter by stress and length: {count_filter} tokens)
+  C --> D(Filter tokens preceeding liquids: {count_liquid} tokens)
+  D --> E(Remove outliers: {count_outlier} tokens)
+  
+  "),
+  width = 800
+)
+
+flow_chart
+```
+
+Having filtered the data, we look at the distribution of tokens across vowel
+categories and other variables.
+
+First, we categorise by vowel type. 
+``` {r tokens-by-vowel-type, fig.cap="Tokens by Vowel Type"}
+plot_tokens_by_category <- function(category, title) {
+  category <- sym(category)
+  Quakebox_filtered %>%
+    group_by(
+      !!category
+    ) %>%
+    summarise(
+      n = n()
+    ) %>%
+    mutate(
+      !!category := fct_reorder(!!category, n)
+    ) %>%
+    ggplot(
+      aes(
+        x = !!category,
+        y = n
+      )
+    ) +
+    geom_col() +
+    labs(
+      title = glue("Token Count by {title}"),
+      y = "Tokens",
+      x = glue("{title}")
+    )
+}
+
+vowel_type_plot <- plot_tokens_by_category("Vowel", "Vowel Type")
+
+vowel_type_plot
+```
+
+By gender:
+``` {r tokens-by-gender, fig.cap="Tokens by Gender"}
+gender_type_plot <- plot_tokens_by_category("participant_gender", "Gender")
+
+gender_type_plot
+```
+By ethnicity:
+``` {r tokens-by-ethnicity, fig.cap="Tokens by Ethnicity"}
+ethnicity_plot <- plot_tokens_by_category("participant_nz_ethnic", "Ethnicity")
+
+ethnicity_plot
+```
+By age:
+``` {r age-category, fig.cap="Tokens by age category"}
+age_plot <- Quakebox_filtered %>%
+    group_by(
+      participant_age_category
+    ) %>%
+    summarise(
+      n = n()
+    ) %>%
+    ggplot(
+      aes(
+        x = participant_age_category,
+        y = n
+      )
+    ) +
+    geom_col() +
+    labs(
+      title = "Token Count by Age Category",
+      y = "Tokens",
+      x = "Age Category"
+    )
+
+age_plot
+```
+
+The plots above should not be surprising given the nature of the corpus. 
+
+The resulting dataset has the following variables:
+
+``` {r}
+Quakebox_filtered <- Quakebox_filtered %>%
+  mutate(
+    following_segment_category = as.character(following_segment_category)
+  )
+
+var_description = c(
+  "Anonymized word identification.",
+  "Anonymized speaker.",
+  "Partipant gender (m/f).",
+  "Participant age category (9 levels).",
+  "Participant ethnicity.",
+  "Participant ethnicity, New Zealand categories. Divided into NZ European, Māori, mixed, and other.",
+  "Languages spoken by participant.",
+  "Speaker articulation rate (average).",
+  "LaBB-CAT match ID for segment. This enables a researcher with access to the LaBB-CAT instance to retreive the original non-anonymised data.",
+  "LaBB-CAT match ID for target. This enables a researcher with access to the LaBB-CAT instance to retreive the original non-anonymised data.",
+  "LaBB-CAT URL to access original data.",
+  "Stress coding for token.",
+  "CELEX frequency of word.",
+  "Corpus frequency of word.",
+  "Time stamp of token onset (seconds).",
+  "Vowel type.",
+  "Duration of token (seconds).",
+  "Mid point F1 reading, generated by Praat.",
+  "Mid point F2 reading, generated by Praat.",
+  "Length of phonological transcription of word in which token appears.",
+  "Mean pitch (hz).",
+  "Minimum pitch of token (hz).", # Check "of token".
+  "Maximum pitch of token (hz).",
+  "Duration of participant speech in recording (seconds).",
+  "Number of words in participant monologue.",
+  "Articulation rate of utterance in which token is located (seconds).",
+  "Segment which follows vowel token.",
+  "Maximum amplitude of word in which token located, generated by Praat.",
+  "Topical annotations.",
+  "Category of segment which follows vowel token."
+)
+
+variables_tables = tibble(
+    Variable = names(Quakebox_filtered),
+    Description = var_description
+  ) %>%
+  mutate(
+    Type = map_chr(Variable, ~ typeof(Quakebox_filtered[[.x]]))
+  ) %>%
+  mutate(
+    `Distinct Values` = map_chr(Variable, ~ n_distinct(Quakebox_filtered[[.x]])),
+    `Distinct Values` = if_else(Type == "character", `Distinct Values`, "NA")
+  ) %>%
+  arrange(Type) %>%
+  kable(
+    format = "html", 
+    table.attr = "style = \"border: 1px solid; margin-bottom: 15px;\""
+  )
+  
+variables_tables
+```
+
+Not all of these variables are used in our analysis. For instance, we do not use
+word frequency data. However, they may be of use for anyone who wishes to engage
+in further analysis or criticism of our results.
+
+We also generate counts for **Table 1** and **Table 2** in the paper.
+``` {r}
+# Speaker level counts (Table 1 in paper)
+
+desired_variables <- c(
+  "participant_age_category", "participant_gender", "participant_nz_ethnic",
+  "length_categories"
+)
+
+Quakebox_filtered <- Quakebox_filtered %>%
+  # generate length as in 'interval_representation'
+  group_by(Speaker) %>%
+  mutate(
+    recording_length = max(Target.segments.start)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    length_categories = cut(
+      recording_length,
+      breaks = c(0, 600, 1200, max(recording_length)),
+      labels = c("short (-10m)", "medium (10-20m)", "long (20m+)")
+    ),
+    length_categories = fct_relevel(
+      length_categories,
+      c("short (-10m)", "medium (10-20m)", "long (20m+)")
+    )
+  )
+
+
+for (var_name in desired_variables) {
+  Quakebox_filtered %>%
+    group_by(.data[[var_name]]) %>%
+    summarise(
+      n = n_distinct(Speaker)
+    ) %>%
+    print()
+}
+  
+# Token level counts (Table 2 in paper).
+
+Quakebox_filtered %>%
+  group_by(Vowel) %>%
+  summarise(
+    n = n()
+  )
+```
+
+The next step in our analysis can be found in the R Markdown file
+`interval_representation.Rmd`. In it, we divide speaker monologues into
+intervals of even length within which we calculate vowel spaces.
+
