@@ -1,2 +1,2 @@
  
-Data is available from https://osf.io/m8nkh/. Place the file 'merged_data.rds' in this directory.
+Data is available from https://osf.io/m8nkh/. Place the file 'anonymised_data.rds' in this directory.
