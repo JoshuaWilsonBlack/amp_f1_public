@@ -292,9 +292,6 @@ Quakebox_filtered <- Quakebox_filtered %>%
 count_outlier <- nrow(Quakebox_filtered)
 ```
 
-and then remove the 5% tails of the
-distribution for each speaker and each formant of each vowel.
-
 # Overlapping vowel spaces
 
 We check for any speakers whose vowel spaces overlap. This likely means that
