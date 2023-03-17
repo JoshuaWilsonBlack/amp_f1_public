@@ -840,9 +840,10 @@ impute_formants <- function(df, cut_off) {
     
     # Remove intermediate variables.
     select(-c(imputed_2, imputed_3))
+  
+  df
 }
 ```
-
 
 It is worth pausing over why the imputed value for an interval with two real
 tokens, and one imputed token is `mean_int * 2/3`, where `mean_int` is the mean
@@ -869,7 +870,6 @@ qb_imputed <- qb_intervals %>%
   ) %>%
   select(interval_length, imputed) %>%
   unnest(cols = imputed)
-  
 ```
 
 We now quantify how much imputation has affected our data. First, we consider
@@ -901,6 +901,7 @@ qb_imputed %>%
   ) +
   coord_cartesian(xlim=c(0,2))
 ```
+
 Figure \@ref(fig:imputation-by-vowel) says that just under 600 60 second
 intervals have no token of <span style="font-variant:small-caps;">nurse</span>,
 and around 800 have only one. All of these intervals will have been subject to
@@ -923,7 +924,7 @@ qb_imputed %>%
   summarise(
     n = n(),
     total_count = first(total_count),
-    rate = n/total_count
+    percentage = n/total_count * 100
   )
 ```
 
@@ -1110,7 +1111,7 @@ formant_60_plot <- data_60s %>%
   geom_point(size=0.5, alpha=0.5) +
   labs(
     title = "60 Second Intervals",
-    subtitle = "Scaled Formant Frequency",
+    subtitle = "Formants",
     x = "Time (seconds)",
     y = "Scaled frequency",
     fill = "Interval value"
@@ -1148,7 +1149,7 @@ amp_60_plot <- data_60s %>%
   ) +
   geom_point(size=0.5, alpha=0.5) +
   labs(
-    subtitle = "Scaled Amplitude",
+    subtitle = "Amplitude",
     x = "Time (seconds)",
     y = "Scaled amplitude"
   ) +
@@ -1215,7 +1216,7 @@ formant_240_plot <- data_240s %>%
   geom_point(size=0.5, alpha=0.5) +
   labs(
     title = "240 Second Intervals",
-    subtitle = "Scaled Formant Frequency",
+    subtitle = "Formants",
     x = "Time (seconds)",
     y = "Scaled frequency",
     fill = "Interval value"
@@ -1252,7 +1253,7 @@ amp_240_plot <- data_240s %>%
   ) +
   geom_point(size=0.5, alpha=0.5) +
   labs(
-    subtitle = "Amplitude Data",
+    subtitle = "Amplitude",
     x = "Time (seconds)",
     y = "Scaled amplitude"
   ) +
@@ -1306,7 +1307,7 @@ combined_plot
 
 Figure \@ref(fig:combined-plot) presents the scaled formant and amplitude data
 for each token for an example speaker along with the interval values after
-imputation at both interval lengths.
+imputation at both interval lengths. This is ***Figure 1*** in the main paper.
 
 We also plot a vowel space style plot for this speaker to indicate how large the
 variation in formant frequencies is for each vowel.
@@ -1575,6 +1576,7 @@ bind_rows("Permuted" = imputed_perm_60, "Original" = imputed_qb_60, .id="data_so
   ) +
   scale_fill_scico(palette="imola", midpoint = 0, na.value = NA)
 ```
+
 There is no immediately obvious different between the two. This is a good sign. 
 Our permutation process is not introducing any obvious structure.
 
@@ -1629,7 +1631,6 @@ illustration in the `corpus_pca.Rmd` document.
 the chunk option `eval` to `TRUE`.
 
 ``` {r, eval=FALSE}
-
 # Save the non-imputed intervals
 write_rds(
   qb_intervals, 
