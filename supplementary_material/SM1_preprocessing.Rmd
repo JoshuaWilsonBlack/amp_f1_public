@@ -180,6 +180,7 @@ We also remove:
 
 - any tokens of duration less than 0.01 or greater than 2 (seconds),
 - any with missing gender information,
+- any speakers with no articulation rate information,
 - any instances of <span style="font-variant:small-caps;">schwa</span>, and
 - any unstressed tokens.
 
@@ -190,6 +191,7 @@ Quakebox_filtered <- Quakebox_anonymised %>%
     vowel_duration >= 0.01, #filter tokens with very short or long vowel durations
     vowel_duration <= 2,
     !is.na(participant_gender), #filter speakers with missing gender
+    !is.na(participant_speaker.articulation.rate),
     Vowel != "SCHWA", #remove all SCHWA tokens
     Target.stress != "0" #filter any unstressed tokens
   ) 

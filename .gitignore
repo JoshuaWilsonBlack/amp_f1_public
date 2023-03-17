@@ -3,5 +3,4 @@
 .RData
 .Ruserdata
 labbcat_data/*.rds
-processed_data/*.rds
 models/*.rds
