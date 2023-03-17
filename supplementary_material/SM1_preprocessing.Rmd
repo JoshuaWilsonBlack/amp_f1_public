@@ -173,7 +173,10 @@ would be enough information to determine the identities of many of our
 participants. The remaining filtering steps are carried out in this worksheet.
 
 
-We now remove:
+Following Brand et al. (2021) we filter
+tokens with F1s above 1100. An F1 value this high suggests a tracking problem.
+
+We also remove:
 
 - any tokens of duration less than 0.01 or greater than 2 (seconds),
 - any with missing gender information,
@@ -183,6 +186,7 @@ We now remove:
 ```{r warning=FALSE}
 Quakebox_filtered <- Quakebox_anonymised %>%
   filter(
+    F1_50 < 1100,
     vowel_duration >= 0.01, #filter tokens with very short or long vowel durations
     vowel_duration <= 2,
     !is.na(participant_gender), #filter speakers with missing gender
@@ -226,8 +230,7 @@ count_liquid <- nrow(Quakebox_filtered)
 # Outlier Removal
 
 We now remove outliers. These are likely the result of errors in the force
-alignment or transcription process. Following Brand et al. (2021) we filter
-tokens with F1s above 1100. An F1 value this high suggests a tracking problem.
+alignment or transcription process. 
 For each speaker, and for their F1 and F2
 for each vowel, we calculate the mean and standard deviation and remove tokens
 which have values above or below 2.5 standard deviations from the mean.
@@ -237,8 +240,6 @@ which have values above or below 2.5 standard deviations from the mean.
 sd_limit = 2.5
 
 vowels_all_summary <- Quakebox_filtered %>%
-  # Remove all tokens with F1 above 1100hz.
-  filter(F1_50 < 1100) %>% 
   # Remove tokens at +/- 2.5 standard deviations
   group_by(Speaker, Vowel) %>%
   summarise(
@@ -254,23 +255,6 @@ vowels_all_summary <- Quakebox_filtered %>%
     max_F2 = mean(F2_50) + sd_limit*(sd(F2_50)),
     min_F2 = mean(F2_50) - sd_limit*(sd(F2_50))
   )
-
-#store the outlier tokens data
-outlier_tokens <- Quakebox_filtered %>%
-  left_join(vowels_all_summary) %>% #add the summary values to the main data
-  mutate(
-    outlier = ifelse(
-      F1_50 > min_F1 &
-        F1_50 < max_F1 &
-        F2_50 > min_F2 &
-        F2_50 < max_F2, 
-      FALSE, # If a token satisfiers all four conditions, it *is not* an outlier.
-      TRUE # If it fails any of the above conditions, it *is* an outlier.
-    )
-  ) %>%
-  group_by(Speaker, Vowel) %>%
-  filter(outlier == TRUE) %>%
-  ungroup()
 
 #this is the main outlier filtering step.
 Quakebox_filtered <- Quakebox_filtered %>%
@@ -409,8 +393,9 @@ outlier_speakers_plot + facet_wrap(vars(Speaker_dist), scales="free")
 
 We are here looking for completely implausible vowel spaces for NZE speakers.
 All of the speakers in the bottom tail of between-vowel Euclidean distance are
-within the realm of possibility for NZe speakers (Figure \@ref(fig:overlap-speakers)).
-We will keep them all in the data set.
+within the realm of possibility for NZE speakers (Figure \@ref(fig:overlap-speakers)).
+We will keep them all in the data set. Compare the results of this step in
+[Brand et al. 2021](https://nzilbb.github.io/Covariation_monophthongs_NZE/Covariation_monophthongs_filtering_anon.html#speaker_outlier_removal).
 
 At this point it is convenient to reorder the dataset to ensure that it is
 organised by the `Speaker` column and in the order in which the tokens appear in
@@ -419,7 +404,7 @@ filtering process.
 
 ``` {r reorder}
 Quakebox_filtered <- Quakebox_filtered %>%
-  # remove new variables
+  # remove variables created for filtering purposes
   select(
     -c(
       "outlier",
@@ -515,12 +500,14 @@ gender_type_plot <- plot_tokens_by_category("participant_gender", "Gender")
 
 gender_type_plot
 ```
+
 By ethnicity:
 ``` {r tokens-by-ethnicity, fig.cap="Tokens by Ethnicity"}
 ethnicity_plot <- plot_tokens_by_category("participant_nz_ethnic", "Ethnicity")
 
 ethnicity_plot
 ```
+
 By age:
 ``` {r age-category, fig.cap="Tokens by age category"}
 age_plot <- Quakebox_filtered %>%
