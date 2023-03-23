@@ -1020,6 +1020,7 @@ look at the variance inflation factor.
 ``` {r}
 vif(lmer_fit)
 ```
+
 A GVIF above 2.24 represents some multicollinearity, a GVIF above 3.16 indicates
 high colinearity. The variance inflation here may come from the correlation
 between amplitude and pitch (`r cor(qb_vowels$speaker_scaled_amp_max, qb_vowels$scaled_pitch)`).
@@ -3134,7 +3135,7 @@ beginning, middle, and end to be fit separately for each topical section (as a
 random effect). We could treat topic part as an ordered factor, but I have stuck
 with a simpler model which allows each part to vary independently.
 
-**NB:** Change `eval=FALSE` to `eval=TRUE` to fit this model yourself.
+**NB:** Change `eval=FALSE` to `eval=FALSE` to fit this model yourself.
 ``` {r, eval=FALSE}
 glmm_fit <- lmer(
   speaker_scaled_amp_max ~ 
@@ -4035,7 +4036,8 @@ see Figure \@ref(fig:fake-fit-monologue)).
 ``` {r fake-fit-monologue, fig.cap="Smooth over speaker scaled time."}
 plot_smooth(gam_fake_fit, view="speaker_scaled_time")
 ```
-This is, in general, quite similar to (Figure \@ref(amp-mono)). This is good,
+
+This is, in general, quite similar to (Figure \@ref(fig:amp-mono)). This is good,
 as we have not removed the temporal order of the data. All we have done is 
 select random places at which to start and end topics.
 
