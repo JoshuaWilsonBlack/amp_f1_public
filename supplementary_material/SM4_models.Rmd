@@ -2653,7 +2653,7 @@ are so small.
 We now produce the same plot as an animation. This will be used in 
 presentations. 
 
-``` {r fig.dim = c(10, 8), fig.cap = "Animated plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
+``` {r animated-plot, fig.dim = c(10, 8), fig.cap = "Animated plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
 animated_plot <- gamm_preds %>%
   ggplot(
     aes(
@@ -2714,7 +2714,7 @@ animated_plot
 ```
 
 Finally, we produce an **interactive plot** using plotly.
-``` {r fig.dim = c(10, 8), fig.cap = "Interactive plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
+``` {r int-plot, fig.dim = c(10, 8), fig.cap = "Interactive plot of effect of amplitude and articulation rate on vowel space as predicted by GAMM models."}
 interactive_plot <- gamm_preds %>%
   filter(
     between(scaled_value, -2.5, 2.5)
