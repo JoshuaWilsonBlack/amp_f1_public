@@ -30,5 +30,7 @@ models take a long time to fit. You can download our models
 [here](https://www.dropbox.com/sh/vb167ng4v7vkfiv/AACbyEr-KeJGaZTCe_3G2BOfa?dl=0).
 Place these in the project directory in a directory named `models`.
 
-It is best to open this repository using the `amplitude_f1.Rproj` file. This 
-will ensure that the `here` package works properly for file management.
+It is best to open this repository as an Rproject. One way to do this in RStudio
+is to go to 'File -> New project', select 'Existing directory', and navigate to
+the downloaded repository.
+wherever
