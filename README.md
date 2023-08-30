@@ -13,10 +13,10 @@ html versions which can be read without rerunning the code yourself.
 ## Directory structure
 
 - `supplementary material`: contains the primary R markdown files running through the four stages of our analysis:
-  1. preprocessing
-  2. interval representation,
-  3. corpus level PCA analysis, and
-  4. GAMM models.
+  1. preprocessing (hosted [here](https://nzilbb.github.io/amp_f1_public/supplementary_material/SM1_preprocessing.html))
+  2. interval representation (hosted [here](https://nzilbb.github.io/amp_f1_public/supplementary_material/SM2_interval_representation.html)),
+  3. corpus level PCA analysis (hosted [here](https://nzilbb.github.io/amp_f1_public/supplementary_material/SM3_corpus_pca.html)), and
+  4. GAMM models (hosted [here](https://nzilbb.github.io/amp_f1_public/supplementary_material/SM4_models.html)).
 - `labbcat_data`: Folder for anonymised raw data from LaBB-CAT. **Empty directory. To get data go to <https://osf.io/m8nkh/> and download the file `merged_data.rds` and place it in this directory.**
 - `scripts`: Contains R scripts for running permutation tests referred to in the supplementary materials.
 - `processed_data`: Data output at various stages of the analysis by the scripts of supplementary materials.
@@ -29,3 +29,6 @@ The above files are sufficient to repeat the analysis we have carried out. Some
 models take a long time to fit. You can download our models
 [here](https://www.dropbox.com/sh/vb167ng4v7vkfiv/AACbyEr-KeJGaZTCe_3G2BOfa?dl=0).
 Place these in the project directory in a directory named `models`.
+
+It is best to open this repository using the `amplitude_f1.Rproj` file. This 
+will ensure that the `here` package works properly for file management.
